@@ -76,3 +76,6 @@ build/*
 !build/test-settings-36groups.json
 !build/test-settings-scroll.json
 !build/test-settings-10groups.json
+
+# 本窗口的交接（同上：含个人路径与排查记录）
+交接-2026-*.md
