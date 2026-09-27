@@ -135,17 +135,18 @@ internal static class MakeIcon
             float radius = size * 0.22f;
             using (GraphicsPath path = Round(new RectangleF(0, 0, size, size), radius))
             using (LinearGradientBrush bg = new LinearGradientBrush(new RectangleF(0, 0, size, size),
-                       Color.FromArgb(255, 86, 196, 255), Color.FromArgb(255, 12, 108, 205), LinearGradientMode.Vertical))
+                       Color.FromArgb(255, 232, 182, 116), Color.FromArgb(255, 156, 88, 40), LinearGradientMode.Vertical))
             {
                 g.FillPath(bg, path);
             }
 
-            // 2×2 的白色圆角方块，像「应用宫格」，小尺寸也认得出
+            // 2×2 的奶油白圆角方块，像「应用宫格」，小尺寸也认得出
+            // （配色：外皮 = 面包烤色渐变 浅金→焦糖棕，中间 = 奶油白；以前是蓝底白块）
             float pad = size * 0.26f;
             float gap = size * 0.08f;
             float cell = (size - pad * 2 - gap) / 2f;
             float cr = Math.Max(1f, cell * 0.28f);
-            using (SolidBrush fg = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
+            using (SolidBrush fg = new SolidBrush(Color.FromArgb(255, 255, 249, 233)))
             {
                 for (int i = 0; i < 4; i++)
                 {
