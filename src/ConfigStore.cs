@@ -82,6 +82,19 @@ namespace BreadLauncher
         }
     }
 
+    /// <summary>一次落盘的结果。★为什么要把「内容没变」和「写成功」分开：
+    /// 合并成一个 bool 的话，调用方分不清「存进去了」和「本来就已经是这样」，
+    /// 而 `.prev`（后悔药）和「预置过没有」这两个判断都要靠这个区别（见 Write 的注释）。</summary>
+    public enum SaveResult
+    {
+        /// <summary>真的写进磁盘了。</summary>
+        Written,
+        /// <summary>磁盘上那份和要写的内容逐字相同 —— **一个字节都没动**，连 `.prev` 都没轮转。</summary>
+        AlreadyCurrent,
+        /// <summary>没写成功（只读 / 满盘 / 该文件被禁写）。</summary>
+        Failed
+    }
+
     public static class ConfigStore
     {
         public static string Json(object o)
@@ -94,8 +107,23 @@ namespace BreadLauncher
         /// <summary>最近一次「读文件失败」的原因（UI 拿它提醒用户一次）。读成功后自动清空。</summary>
         public static string LastReadError;
 
-        /// <summary>连坏文件的备份都写不出去时置位：这时候宁可不落盘，也不能覆盖掉用户唯一那份数据。</summary>
-        public static bool SuppressWrite;
+        /// <summary>最近一次「写文件失败」的原因（连成功一次就清空）。**「关于」窗口拿它给用户看**。</summary>
+        public static string LastWriteError;
+
+        /// <summary>
+        /// 被禁写的文件（逐文件、不跨文件）。
+        /// ★改这里之前先看这条：原来是**一个全局 bool**（`SuppressWrite`），
+        ///   置位条件是「坏文件备份也失败」，而 `Read` 是 `settings.json` 和 `apps-cache.json` **共用**的 ——
+        ///   于是「缓存文件坏了且备份不出去」会把**用户的分组**也一起禁写，全程还没有任何提示。
+        ///   现在按文件记；并且该文件**读成功一次就解除**（临时故障恢复后不用重启软件）。
+        /// </summary>
+        private static readonly HashSet<string> BlockedWrites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        private static string Norm(string file)
+        {
+            try { return Path.GetFullPath(file); }
+            catch (Exception) { return file; }
+        }
 
         public static T Read<T>(string file, T fallback) where T : class
         {
@@ -108,6 +136,7 @@ namespace BreadLauncher
                 ser.MaxJsonLength = 64 * 1024 * 1024;
                 T obj = ser.Deserialize<T>(text);
                 LastReadError = null;
+                BlockedWrites.Remove(Norm(file));     // 能读通 = 这个文件的写入限制解除
                 return obj == null ? fallback : obj;
             }
             catch (Exception ex)
@@ -115,7 +144,7 @@ namespace BreadLauncher
                 // 配置坏了不能让软件打不开：先尽力把原文留一份备份，再用默认值继续。
                 LastReadError = file + "：" + ex.GetType().Name + " " + ex.Message;
                 Log(Program.AppDir, "读文件失败 " + LastReadError);
-                if (BackupBad(file) == false) SuppressWrite = true;
+                if (BackupBad(file) == false) BlockedWrites.Add(Norm(file));
                 return fallback;
             }
         }
@@ -143,18 +172,40 @@ namespace BreadLauncher
 
         private static int _writeSeq;
 
+        /// <summary>读磁盘上那份的原文（读不到返回 null：那就当作「必须写」）。</summary>
+        private static string TryReadText(string file)
+        {
+            try
+            {
+                if (!File.Exists(file)) return null;
+                return File.ReadAllText(file, Encoding.UTF8);
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>写失败原因只记「不一样的那条」，免得同一个故障把日志刷满。</summary>
+        private static string _lastWriteErrorLogged;
+
         /// <summary>
-        /// 落盘。三个坑都在这里堵住：
+        /// 落盘。四个坑都在这里堵住：
         ///   1) 旧写法是「先删原文件再改名」，进程正好死在两步之间 → 整份配置消失；
         ///      改成先写临时文件、再 File.Replace 原子替换（NTFS 元数据级，不存在空窗）。
         ///   2) 写不进去（只读目录 / 满盘 / 被杀软占着）时旧写法会抛异常，异常一路逃到
-        ///      Application.Run 之外 —— 面板根本弹不出来。现在一律兜住并返回 false。
+        ///      Application.Run 之外 —— 面板根本弹不出来。现在一律兜住并返回 Failed。
         ///   3) 每次落盘把**上一版**留成 settings.json.prev：用户误删分组 / 误清空之后还能救回来
         ///      （settings.json 里那个 Pinned 旧字段也一直留着最老的 6 条 key，等于第二道保险）。
+        ///   4) ★**内容一字未变就不写**：开面板和关面板都会无条件落一次盘，而「上一版」是靠
+        ///      Replace 出来的中间文件轮转的 —— 无条件写就等于**每开关一次面板都把后悔药覆盖成最新版**。
+        ///      实测两文件 SHA256 逐字节相同，于是 README 教的「关掉面板再把 .prev 改名回来」永远救不回
+        ///      分组（关面板那一步本身就把 .prev 覆盖了）；同一根因还会把用户存的 `PanelY` 夹掉。
         /// </summary>
-        public static bool Write(string file, object o)
+        public static SaveResult Write(string file, object o)
         {
-            if (SuppressWrite) return false;
+            if (BlockedWrites.Contains(Norm(file)))
+            {
+                LastWriteError = file + "：该文件此前读失败且备份不出去，已暂停写入（避免覆盖掉唯一那份数据）";
+                return SaveResult.Failed;
+            }
 
             string tmp = null;
             bool keepTmp = false;
@@ -163,9 +214,19 @@ namespace BreadLauncher
                 string dir = Path.GetDirectoryName(file);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+                string text = Json(o);
+
+                // ★内容没变就整个跳过：既不写文件，也不轮转 .prev（那才是「上一版」）
+                string onDisk = TryReadText(file);
+                if (onDisk != null && onDisk == text)
+                {
+                    LastWriteError = null;
+                    return SaveResult.AlreadyCurrent;
+                }
+
                 int seq = System.Threading.Interlocked.Increment(ref _writeSeq);
                 tmp = file + "." + seq.ToString() + ".tmp";
-                File.WriteAllText(tmp, Json(o), new UTF8Encoding(false));
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
 
                 if (File.Exists(file))
                 {
@@ -213,12 +274,19 @@ namespace BreadLauncher
                     File.Move(tmp, file);
                     tmp = null;
                 }
-                return true;
+                LastWriteError = null;
+                return SaveResult.Written;
             }
             catch (Exception ex)
             {
-                Log(Program.AppDir, "写文件失败 " + file + "：" + ex.GetType().Name + " " + ex.Message);
-                return false;
+                LastWriteError = file + "：" + ex.GetType().Name + " " + ex.Message;
+                string brief = ex.GetType().Name + " " + ex.Message;
+                if (_lastWriteErrorLogged != brief)     // 同一个故障只记一次，别把日志刷满
+                {
+                    _lastWriteErrorLogged = brief;
+                    Log(Program.AppDir, "写文件失败 " + LastWriteError);
+                }
+                return SaveResult.Failed;
             }
             finally
             {
@@ -321,12 +389,19 @@ namespace BreadLauncher
 
         public static bool SaveSettings(string appDir, Settings s)
         {
-            return SaveSettingsFile(SettingsFile(appDir), s);
+            return SaveSettingsResult(SettingsFile(appDir), s) != SaveResult.Failed;
         }
 
         public static bool SaveSettingsFile(string file, Settings s)
         {
-            if (s == null) return false;
+            return SaveSettingsResult(file, s) != SaveResult.Failed;
+        }
+
+        /// <summary>落盘并**如实报告**结果（Written / AlreadyCurrent / Failed）。
+        /// 分组的写入方用这个：`AlreadyCurrent` 也算「磁盘上是对的」，只有 `Failed` 才是真出事。</summary>
+        public static SaveResult SaveSettingsResult(string file, Settings s)
+        {
+            if (s == null) return SaveResult.Failed;
             Normalize(s);
             return Write(file, s);
         }

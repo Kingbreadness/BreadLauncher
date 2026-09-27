@@ -27,6 +27,10 @@ namespace BreadLauncher
         /// <summary>读配置时的出错原因（OnLoad 里提醒一次就清掉）。</summary>
         private string _settingsLoadError;
 
+        /// <summary>本次会话里第一次「配置没写进去」的原因。**不打扰用户**，只在「关于」里写一笔
+        /// （用户 2026-09-27 明确选的方式：出事了要能查到，但别弹窗打断）。</summary>
+        private string _lastWriteFailText;
+
         private Settings _settings;
         private List<AppEntry> _all = new List<AppEntry>();
         private List<GroupView> _groups = new List<GroupView>();
@@ -1419,18 +1423,21 @@ namespace BreadLauncher
         private bool PersistSettings()
         {
             if (PreviewMode) return false;
-            bool ok;
+            SaveResult r;      // 枚举在 BreadLauncher 命名空间下，不在 ConfigStore 里
             if (string.IsNullOrEmpty(_settingsFile))
             {
-                string dir = Program.AppDir;
-                ok = ConfigStore.SaveSettings(dir, _settings);
+                r = ConfigStore.SaveSettingsResult(ConfigStore.SettingsFile(Program.AppDir), _settings);
             }
             else
             {
-                ok = ConfigStore.SaveSettingsFile(_settingsFile, _settings);
+                r = ConfigStore.SaveSettingsResult(_settingsFile, _settings);
             }
-            if (ok) LogGroupState();
-            return ok;
+            // ★只有「真的写进去了」才记那行分组概况日志：内容没变时每天开关面板几十次，
+            //   每都记一遍只会把日志刷满，反而找不到「谁把分组改没了」那一行。
+            if (r == SaveResult.Written) LogGroupState();
+            if (r == SaveResult.Failed && string.IsNullOrEmpty(_lastWriteFailText))
+                _lastWriteFailText = ConfigStore.LastWriteError;
+            return r != SaveResult.Failed;
         }
 
         /// <summary>把当前分组概况写进日志（谁在什么时候把分组改成了什么样，事后查得到）。</summary>
@@ -1554,6 +1561,8 @@ namespace BreadLauncher
                 _settings.Groups.Add(g);
             }
             // 只有真写进盘了才算「预置过」；写不进去（只读目录等）就保持未预置，下次启动还能再来一遍
+            // ★AlreadyCurrent 也算「盘上是对的」：内容没变说明某次已经写成功过，再算成「没预置」
+            //   就会每次启动都往「常用」组里塞一遍（虽然 Normalize 会去重，但白忙活还容易出岔）。
             if (PersistSettings()) _settings.Seeded = true;
         }
 
@@ -2339,6 +2348,17 @@ namespace BreadLauncher
             Close();
         }
 
+        /// <summary>「关于」里那段「配置保存状态」的文案。**单独一个方法是为了能被探针直接断言**
+        /// （用户在 2026-09-27 选的通知方式：不弹窗、不打扰，但出过事要能在「关于」里查到）。</summary>
+        private string AboutSaveStatusText(string failText)
+        {
+            if (string.IsNullOrEmpty(failText)) return "配置保存：正常。";
+            return "⚠ 上次配置没保存成功，改动可能没留下：\n" + failText + "\n"
+                 + "（分组和设置都还在，重新改一次并正常关闭面板即可重试保存；\n"
+                 + " 常见原因是那个文件夹被设成了只读、或者磁盘满了）";
+        }
+
+        /// <summary>「关于」。</summary>
         private void ShowAbout()
         {
             _suppressDeactivate = true;
@@ -2346,11 +2366,12 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.3\n\n" +
+                    "BreadLauncher 1.4\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
                     "关闭窗口即退出，没有后台进程、没有开机自启。\n\n" +
+                    AboutSaveStatusText(_lastWriteFailText) + "\n\n" +
                     "数据目录：" + Program.AppDir,
                     "关于 BreadLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }

@@ -1734,6 +1734,84 @@ namespace BreadLauncher
             }
             catch (Exception exIco) { Check(false, "图标缓存竞争断言异常：" + exIco.Message); }
 
+            // ★★ 变体：后悔药（.prev）必须真的是「上一版」，而且写失败不能连累别的文件
+            //   （ConfigStore.Write 的「内容没变就不写」+ 逐文件禁写。用户选的通知方式 = 只在「关于」里写一笔）
+            try
+            {
+                string dir = Path.Combine(Program.AppDir, "probe-prev");
+                try { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+                catch (Exception) { }
+                Directory.CreateDirectory(dir);
+                string f1 = Path.Combine(dir, "s.json");
+                string f3 = Path.Combine(dir, "c.json");
+
+                ConfigStore.SaveSettingsFile(f1, OneGroup("A"));
+                ConfigStore.SaveSettingsFile(f1, OneGroup("B"));
+                // ★这一次内容和磁盘上一字不差 —— 旧写法会照样重写、把 .prev 轮转成 B（后悔药就废了）
+                SaveResult r3 = ConfigStore.SaveSettingsResult(f1, OneGroup("B"));
+                string prev = File.Exists(f1 + ".prev") ? File.ReadAllText(f1 + ".prev", Encoding.UTF8) : "(没有)";
+                Check(r3 == SaveResult.AlreadyCurrent && prev.Contains("\"A\""),
+                    "内容一字没变时不重写、也不动 .prev：第三次落盘 = " + r3
+                    + "，.prev 里还是上一版（含 \"A\"=" + prev.Contains("\"A\"") + "）"
+                    + " —— 这条是「后悔药被每次开关面板覆盖掉」那次的回归测试");
+
+                // 内容真变了必须照写、.prev 跟着轮转
+                ConfigStore.SaveSettingsFile(f1, OneGroup("C"));
+                string prev2 = File.ReadAllText(f1 + ".prev", Encoding.UTF8);
+                Check(prev2.Contains("\"B\""), "内容真变了照写，.prev 轮转成上一版（现在含 \"B\"=" + prev2.Contains("\"B\"") + "）");
+
+                // ② 一个文件写失败，不许连累别的文件（原来是全局 SuppressWrite，缓存坏了会连分组一起禁写）
+                Directory.CreateDirectory(f3 + ".bad");          // 占住备份路径 → BackupBad 必失败
+                File.WriteAllText(f3, "{ 这不是合法 json", Encoding.UTF8);
+                ConfigStore.Read<AppCache>(f3, null);            // 读坏 → 备份失败 → 只禁 f3 自己
+                SaveResult bad = ConfigStore.Write(f3, new AppCache());
+                SaveResult other = ConfigStore.Write(f1, OneGroup("D"));
+                Check(bad == SaveResult.Failed, "坏文件那个路径自己确实被禁写了（返回 " + bad + "）");
+                Check(other != SaveResult.Failed,
+                    "★别的文件照写不误（返回 " + other + "）—— 修掉「缓存文件坏了就把分组也禁写」那次的回归测试");
+
+                // ③ 写失败要留下能查的痕迹（用户要的：只在「关于」里写一笔）
+                string failTxt = Path.Combine(dir, "locked");
+                Directory.CreateDirectory(failTxt);              // 拿目录当文件写 → 一定失败
+                SaveResult failed = ConfigStore.Write(failTxt, OneGroup("E"));
+                Check(failed == SaveResult.Failed && string.IsNullOrEmpty(ConfigStore.LastWriteError) == false,
+                    "写失败会记下原因（「关于」里显示的文案）："
+                    + (string.IsNullOrEmpty(ConfigStore.LastWriteError) ? "没记 ❌" : "已记 ✅"));
+
+                try { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+                catch (Exception) { }
+            }
+            catch (Exception exPrev) { Check(false, "后悔药断言异常：" + exPrev.Message); }
+
+            // ★★ 变体：「关于」窗口那行「配置保存状态」—— 用户选的通知方式就是写在这里
+            try
+            {
+                // 直接测真正生成那句文案的方法（比在 exe 里搜字符串可靠：UTF-16 字面量在文件里
+                // 可能起始于奇数偏移，成对解码会漏 —— 第一版就是这么假 FAIL 的）
+                System.Reflection.MethodInfo about = typeof(MainForm).GetMethod("AboutSaveStatusText", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(about != null, "「关于」的配置保存状态由一个单独方法生成（探针能直接断言它）");
+                if (about != null)
+                {
+                    string okTxt = (string)about.Invoke(f, new object[] { null });
+                    Check(okTxt.Contains("配置保存：正常"),
+                        "没出过事时「关于」显示「" + okTxt + "」");
+                    string badTxt = (string)about.Invoke(f, new object[] { "写不进去：磁盘满了" });
+                    Check(badTxt.Contains("上次配置没保存成功") && badTxt.Contains("磁盘满了") && badTxt.Contains("配置"),
+                        "出过事时「关于」会写出原因（" + badTxt.Replace("\n", " ") + "）");
+                }
+
+                // 真写一次失败，MainForm 里那个字段必须被填上（不然「关于」永远显示正常）
+                System.Reflection.FieldInfo wf = typeof(MainForm).GetField("_lastWriteFailText", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(wf != null, "「写失败」这句话存在 MainForm 的字段里，供「关于」读取");
+                Directory.CreateDirectory(Path.Combine(Program.AppDir, "probe-about"));   // 目录当文件写 → 必失败
+                Check(ConfigStore.Write(Path.Combine(Program.AppDir, "probe-about"), new AppCache()) == SaveResult.Failed
+                      && string.IsNullOrEmpty(ConfigStore.LastWriteError) == false,
+                    "写失败会在 ConfigStore 里留下原因（「关于」拿的就是它）");
+                try { Directory.Delete(Path.Combine(Program.AppDir, "probe-about"), true); }
+                catch (Exception) { }
+            }
+            catch (Exception exAbout) { Check(false, "「关于」断言异常：" + exAbout.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
@@ -1944,6 +2022,17 @@ namespace BreadLauncher
         {
             PropertyInfo p = o.GetType().GetProperty(name, BindingFlags.NonPublic | BindingFlags.Instance);
             return p.GetValue(o, null);
+        }
+
+        /// <summary>造一份只含一个分组的配置（后悔药/禁写那几条断言用，别碰真实配置）。</summary>
+        private static Settings OneGroup(string name)
+        {
+            Settings s = new Settings();
+            s.Seeded = true;
+            AppGroup g = new AppGroup(name);
+            g.Keys.Add("microsoft.windows.explorer");
+            s.Groups.Add(g);
+            return s;
         }
 
         /// <summary>文件的 SHA256（小写十六进制）。用来断言「这个文件没被动过」。</summary>
