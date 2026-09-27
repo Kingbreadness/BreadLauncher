@@ -1006,7 +1006,19 @@ namespace BreadLauncher
             int bx0 = f.Left, by0 = f.Top;
             // ★原来的点写死「第 1 行第 4 格」：面板宽度/组数一变（列数 3↔4），那个点会落在文件夹上，
             //   于是"拖面板"变成"拖文件夹" → 假失败。改成**两列之间的缝**：和组数无关，永远是空白。
-            Point bg = new Point(groupLeft + tw + Math.Max(2, gx / 2), groupTop + miniPad + miniBox / 2);
+            // ★★但是上面那段「把面板拉宽 15 次」的性能测试**刚刚改过宽度**：_groupLeft / 列数都是宽度算出来的，
+            //   拿拉宽**之前**取的值定位，点就会从"缝里"漂到"第 2 个文件夹上" —— 于是
+            //   bgEmpty 恒为 false，「跟手 1:1」「搬面板」「松手落实位置」三条断言**每次都静默跳过**（实测六份配置全跳）。
+            //   修法不是改公式（gx/2 < gx 本来就在缝里），而是**重取一次布局**再定位。
+            int bgCols = (int)Prop(f, "Columns");
+            int bgTw = (int)Prop(f, "TileW");
+            int bgGx = (int)Prop(f, "GapX");
+            int bgMiniPad = (int)Prop(f, "MiniPad");
+            int bgMiniBox = (int)Prop(f, "MiniBox");
+            int bgLeft = (int)Field(f, "_groupLeft");
+            int bgTop = (int)Field(f, "_groupTop");
+            int bgH = (int)Field(f, "_groupHeight");
+            Point bg = new Point(bgLeft + bgTw + Math.Max(2, bgGx / 2), bgTop + Math.Min(bgH - 4, bgMiniPad + bgMiniBox / 2));
             // ★前提：这个点此刻确实是空白（面板刚被拉宽过 → 列数可能从 3 变 4 → 这个点会落进文件夹格子里，
             //   那样拖的就是**文件夹**不是面板 —— 探针自己坐标过期，不能报成功能坏了）
             object[] bgArgs = new object[] { bg, 0, 0 };
@@ -1533,7 +1545,63 @@ namespace BreadLauncher
                 else Say("（这组没有应用，跳过显示名断言）");
             }
             catch (Exception exName) { Check(false, "显示名断言异常：" + exName.Message); }
-            f.Close();            Say(_ok ? "结果：全部通过" : "结果：有失败项");
+
+            // ★★ 变体：这一格被分组区下沿切掉了一部分 —— 被裁掉的那段里不能再命中
+            //   （「绘制认裁剪、命中不认」那个老 bug 家族的回归测试，见 MainForm.GroupHitTest 的可见区守卫）。
+            //   默认配置（3 行、面板够高）不会触发 → 必须拿 build\test-settings-10groups.json 跑。
+            try
+            {
+                int seamCols = (int)Prop(f, "Columns");
+                int seamTw = (int)Prop(f, "TileW");
+                int seamGx = (int)Prop(f, "GapX");
+                int seamGy = (int)Prop(f, "GapY");
+                int seamTh = (int)Prop(f, "TileH");
+                int seamLeft = (int)Field(f, "_groupLeft");
+                int seamTopF = (int)Field(f, "_groupTop");
+                int seamH = (int)Field(f, "_groupHeight");
+                int seamScroll = (int)Field(f, "_scrollY");
+                int seamVisibleBottom = seamTopF + seamH;
+                if (seamScroll != 0)
+                {
+                    Say("（跳过：这次 _scrollY=" + seamScroll + "≠0，看不到「被下沿切掉一半」的格子）");
+                    NoteSkip("变体：滚动位置不为 0，没有「被分组区下沿切掉」的格子可测（用 10 组配置且 _scrollY=0 才有）");
+                }
+                else
+                {
+                    int clipped = 0, alive = 0;
+                    // GroupHitTest 是 MainForm 的私有方法（探针只反射调用，不改成 internal）
+                    MethodInfo seamHit = typeof(MainForm).GetMethod("GroupHitTest", BindingFlags.NonPublic | BindingFlags.Instance);
+                    for (int i = 0; i < groups.Count; i++)
+                    {
+                        int r = i / seamCols, c = i % seamCols;
+                        int x = seamLeft + c * (seamTw + seamGx);
+                        int y = seamTopF + r * (seamTh + seamGy) - seamScroll;
+                        if (y + seamTh <= seamVisibleBottom) continue;   // 完整可见：跟这条断言无关
+                        clipped++;
+                        int probeX = x + seamTw / 2;
+                        for (int probeY = seamVisibleBottom + 1; probeY < y + seamTh; probeY++)
+                        {
+                            object[] seamArgs = new object[] { new Point(probeX, probeY), 0, 0 };
+                            seamHit.Invoke(f, seamArgs);
+                            if ((int)seamArgs[1] >= 0) alive++;
+                        }
+                    }
+                    if (clipped == 0)
+                    {
+                        Say("（跳过：这份配置在 _scrollY=0 下没有被下沿切掉的格子 —— 换 build\\test-settings-10groups.json 跑）");
+                        NoteSkip("变体：配置没有被分组区下沿切掉的格子（要用 build\\test-settings-10groups.json）");
+                    }
+                    else
+                    {
+                        Check(alive == 0,
+                            "被分组区下沿切掉的 " + clipped + " 个格子里，可见区之外一个点都不再命中"
+                            + "（命中数=" + alive + "；这是「点空白缝启动看不见的应用」那次的回归测试）");
+                    }
+                }
+            }
+            catch (Exception exSeam) { Check(false, "裁剪缝断言异常：" + exSeam.Message); }
+
+            f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
         }
@@ -1697,8 +1765,28 @@ namespace BreadLauncher
         /// </summary>
         private static void CheckIf(bool pre, string preWhy, bool cond, string what)
         {
-            if (pre == false) { Say("（跳过：" + preWhy + "）"); return; }
+            if (pre == false) { NoteSkip(preWhy); Say("（跳过：" + preWhy + "）"); return; }
             Check(cond, what);
+        }
+
+        /// <summary>被跳过的断言（按理由归并）。★规矩：0 FAIL ≠「都测过了」——
+        ///   必须看跳过清单（`test-settings-groups.json` 曾经静默跳过整段分页断言）。</summary>
+        private static readonly List<string> Skips = new List<string>();
+        private static void NoteSkip(string why)
+        {
+            if (Skips.Contains(why) == false) Skips.Add(why);
+        }
+
+        /// <summary>报告末尾打印「这次跳过了哪几条」，让跳过再也藏不住。</summary>
+        private static void ReportSkips()
+        {
+            if (Skips.Count == 0)
+            {
+                Say("跳过汇总：0 条（本次每一处带前提的断言都真的跑了）");
+                return;
+            }
+            Say("跳过汇总：共 " + Skips.Count + " 类断言没跑（这些**没有被验证**，别把「0 FAIL」当成「都测过了」）：");
+            for (int i = 0; i < Skips.Count; i++) Say("  " + (i + 1) + ". " + Skips[i]);
         }
 
         private static void Say(string s)

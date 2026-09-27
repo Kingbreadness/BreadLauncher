@@ -16,6 +16,8 @@ build/icontest/
 #   test-settings-9apps.json   1 组正好 9 个（正好一页的边界）
 #   test-settings-36groups.json 36 组（测面板滚动）
 #   test-settings-scroll.json  13 个空组（测滚动/空态）
+#   test-settings-10groups.json 10 组 + 604x738：第 4 行会被分组区下沿切掉 ——
+#                               只有这份配置能验「被裁掉的格子，可见区之外不能再命中」
 build/tmp.json
 build/tmp-run.json
 
@@ -73,3 +75,4 @@ build/*
 !build/test-settings-9apps.json
 !build/test-settings-36groups.json
 !build/test-settings-scroll.json
+!build/test-settings-10groups.json

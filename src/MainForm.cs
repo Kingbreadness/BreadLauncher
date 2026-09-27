@@ -906,6 +906,14 @@ namespace BreadLauncher
         {
             index = -1;
             slot = -2;
+            // ★可见区守卫（必须和 SlotIndexAt:1074 一模一样）：绘制在 DrawGroups 末尾用
+            //   SetClip(0, _groupTop, Width, _groupHeight) **真裁剪**，而这里原来一个边界都不查 ——
+            //   于是分组区下沿到页脚之间那条 ~10px 的空白缝里点一下，会命中一个**被裁掉、一个像素都没画**
+            //   的格子：left=0 直接启动那个组的前几个应用，right=0 弹出它的右键菜单。
+            //   实测（build\audit\0b-recheck-this-window.md §三）：11 组 / 604x738 时
+            //   y=678..682 命中 slot=0/1/2、y=690..717 命中 slot=3/4/5。
+            //   判据：格子完整可见才画（坑清单第 3 条）—— 命中同样只认可见区。
+            if (p.Y < _groupTop || p.Y > _groupTop + _groupHeight) return -1;
             int cols = Columns;
             int tw = TileW;
             int thAll = TileH;

@@ -22,7 +22,9 @@ build\BreadLauncher.exe --dupicons                  按图标像素哈希找重�
 - `--scan` / `--launch` / `--icons` 都会真扫一遍应用，每次往 `build\cache\log.txt` 追加两行（「图标来源补全」+「扫描完成」）。
 - `--dupicons` 除了扫一遍写日志，还会**对每个条目取一张 32px 图标并落盘**到 `build\cache\icons\`。
 - `--preview` / `--previewall` 会**真的创建一个屏幕外窗口**（布局、取图标全跑一遍），所以会把取到的图标 PNG 写进 `build\cache\icons\`。写日志**不是无条件的**：只有真的触发扫描（没有可用缓存，或缓存超过 12 小时触发后台刷新）或取图失败时才写 `build\cache\log.txt`；缓存新鲜、图标齐全时预览不写日志。
-- `apps-cache.json` 只有 `--preview` 会写：**没有可用缓存时必写**，缓存超 12 小时会触发一次后台刷新（刷新完成也会写）。**`--previewall` 从不写它** —— 它只读缓存或现扫一遍，不落盘。
+- `apps-cache.json` **`--preview` 和 `--previewall` 都不写**：两处 `ConfigStore.SaveCache(...)` 调用点都在 `MainForm.cs:1479`、`MainForm.cs:1506`，**两条都被 `PreviewMode == false` 挡住**（2026-09-27 实测：预览前后 `apps-cache.json` 哈希不变）。
+  ★这条原来写反了（说"`--preview` 没有可用缓存时必写"）——**照那句去删守卫就会把历史事故招回来**（探针/预览把临时目录的条目写进用户真实缓存，见 `MainForm.cs:1476` 的注释）。
+  `--previewall` 只读缓存或现扫一遍，同样不落盘。
 - `--icontest` **会先清掉图标缓存再强制重取**：`IconService.ClearDiskCache()` 会清内存缓存 + 删掉 `build\cache\icons\` 目录下的所有 `*.png`（目录本身保留）—— 想保住图标缓存就别跑它。
 - `--launch` 会真的启动应用，别拿它试你不认识的名字。
 - 缓存新鲜时（本机独立验收时实测过）预览连日志都不写、`settings.json` 的 mtime 和哈希都不变；但别把这条当成「自检绝对无副作用」的保证 —— 上面几条才是完整规则。
@@ -47,3 +49,21 @@ build\clickprobe.exe [settings.json] [组序号]
 ```
 
 探针只读配置（面板带预览模式，**不写 `settings.json`**）、不会启动任何应用，「查看全部」窗口由定时器自动取消；报告同时打印到控制台并写一份 `build\clickprobe-report.txt`。它和 `--preview` 一样会真的创建屏幕外窗口，所以也会写图标缓存（日志同 `--preview`：只有触发扫描或取图失败时才写）。要验分页那几条，得给它一份含**超过 9 个应用**的分组的配置（正好 9 个会去验边界：第 9 格能启动、只有 1 页）；它跑完还会顺手截一张第 2 页的面板图 `build\panel-page2.png`，可以直接打开看排版。
+
+### ★ 哪份配置覆盖哪一段（别只用一份跑完就说「全过」）
+
+| 配置 | 覆盖 | 备注 |
+|---|---|---|
+| `test-settings-groups.json` | 命中测试 / 框选 / 右键菜单 / 显示名 / 滚动条像素 / 亚克力 | 组1 名义 12 个 key，**实际只有 5 个能解析** |
+| `test-settings-10apps.json` | **分页 / 滚轮翻页 / 碎 Delta 攒格** | 10/10 可解析，分页那段只有这份跑得到 |
+| `test-settings-10groups.json` | **「被分组区下沿切掉的格子，可见区之外不能再命中」** | 10 组 → 第 4 行被下沿切掉；其余配置会跳过这条 |
+| `test-settings-9apps.json` | 正好一页的边界 | 9/9 |
+| `test-settings-36groups.json` | 面板滚动 | 每组 2 个 |
+| `test-settings-scroll.json` | 滚动 / 空态 | 13 个空组 |
+| 你自己的 `settings.json` | 真实数据（大组 31 个 → 4 页） | 只读，不落盘 |
+
+**规矩：`0 FAIL` ≠「都测过了」。** 探针在报告末尾打印**「跳过汇总」**（2026-09-27 起），
+看到 `（跳过：…）` 就等于那一条**没有被验证**。
+★特别注意两条容易「静默跳过」的关键断言：**「跟手 1:1：鼠标走 100px 面板走 100px」**（拖动/搬面板那一段，
+以前因为坐标在性能测试改宽度之前取好而恒跳过 → 2026-09-27 已修）和**「被下沿切掉的格子不能再命中」**
+（只有 `test-settings-10groups.json` 会真的跑）。这两条必须亲眼看到 `[PASS]`。
