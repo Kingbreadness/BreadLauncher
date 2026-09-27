@@ -4,6 +4,9 @@
 
 界面主体是若干「大文件夹」：每个文件夹是一块圆角容器，里面铺 3×3 个小图标，**不用点进去，点哪个小图标就启动哪个**。
 
+> **下载**：到 [Releases](../../releases/latest) 拿单文件 `BreadLauncher.exe`（免安装、不需要 .NET 运行时；首次运行 Windows 可能提示「SmartScreen」，点「更多信息」→「仍要运行」）。
+> 想自己编译见 [第六节](#六重新编译)（一条命令，用系统自带 csc.exe，无第三方依赖）。
+
 ![界面截图](docs/screenshot.png)
 
 （截图里是 Windows 自带应用，用 `BreadLauncher.exe --preview 图.png 配置.json` 就能离屏渲染出这种图。）
