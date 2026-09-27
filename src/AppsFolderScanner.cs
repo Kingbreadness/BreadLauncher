@@ -378,7 +378,10 @@ namespace BreadLauncher
                         if ((at & FileAttributes.Hidden) != 0 || (at & FileAttributes.System) != 0) continue;
                         if ((at & FileAttributes.ReparsePoint) != 0) continue;   // 联接点 / 符号链接：别跟
                     }
-                    catch (Exception) { }
+                    // ★取不到属性就**跳过**，别 Add：原来 catch 是空的，这一条会绕过上面两道判断
+                    //   直接进 subs —— 而「ReparsePoint 判定被整条绕过」恰恰是这个函数最要防的事
+                    //   （联接点指回上层会让扫描重复甚至绕圈）。代价只是「读不到属性的目录不扫」，可接受。
+                    catch (Exception) { continue; }
                     subs.Add(all[i]);
                 }
             }
@@ -621,7 +624,12 @@ namespace BreadLauncher
                 ConfigStore.Log(appDir, "桌面快捷方式补全失败：" + ex.Message);
             }
             if (appDir != null)
+            {
                 ConfigStore.Log(appDir, "桌面快捷方式：标记已有 " + marked + " 条、新增 " + added + " 条");
+                // ★把「有没有枚举失败」一起打出来：这样「新增 0 条」才分得清是「真没有」还是「没扫到」
+                if (string.IsNullOrEmpty(LastListError) == false)
+                    ConfigStore.Log(appDir, "⚠ 上面这次扫描里有目录没能列出来（不是「没有文件」，是「没读到」）：" + LastListError);
+            }
         }
 
         private static bool IsDesktopDir(string dir)
@@ -631,6 +639,10 @@ namespace BreadLauncher
             return string.Equals(dir, d, StringComparison.OrdinalIgnoreCase) || string.Equals(dir, c, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>最近一次文件枚举失败的原因（null = 没失败过）。扫描汇总日志会带上它，好区分
+        /// 「这个目录本来就没有东西」和「这个目录没扫到」——两者在日志里以前长得一模一样。</summary>
+        public static string LastListError;
+
         private static string[] ListFiles(string dir, string pattern, bool recursive)
         {
             try
@@ -639,7 +651,14 @@ namespace BreadLauncher
                 // 桌面只扫一层：用户桌面下面可能挂着大文件夹，递归扫会拖慢首次启动
                 return Directory.GetFiles(dir, pattern, recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
             }
-            catch { return new string[0]; }
+            // ★这是**所有**文件枚举的公共出口（桌面快捷方式 / .url 补图标 / 自定义目录都走它）。
+            //   以前静默吞掉 → 用户报「扫描少了应用」「我加了目录怎么什么都没有」时，
+            //   日志里只有一句「新增 0 条」，根本分不清是"真没有"还是"没扫到"。
+            catch (Exception ex)
+            {
+                LastListError = dir + "：" + ex.GetType().Name + " " + ex.Message;
+                return new string[0];
+            }
         }
 
         /// <summary>读 .url（INI 文本）里的 URL= 和 IconFile=。编码：先按 UTF-8 严格解码，失败就用系统 ANSI。</summary>

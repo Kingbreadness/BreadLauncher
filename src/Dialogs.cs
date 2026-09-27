@@ -57,7 +57,7 @@ namespace BreadLauncher
         private void Init(string title, string initial, string okText)
         {
             _title = title ?? string.Empty;
-            ClientSize = new Size(Theme.Px(this, 380), Theme.Px(this, 168));
+            // ClientSize 交给 ApplyLayout() 统一算（这里再写一遍只是死数字，会被它覆盖）
 
             _input = new TextBox();
             _input.BorderStyle = BorderStyle.None;
@@ -82,6 +82,21 @@ namespace BreadLauncher
             _ok.Click += delegate { DialogResult = DialogResult.OK; };
             Controls.Add(_ok);
 
+            ApplyLayout();
+        }
+
+        /// <summary>
+        /// 按**当前** DPI 重算窗口大小与所有子控件位置。
+        /// ★为什么要单独一个方法、并在 OnLoad 里再调一次：
+        ///   构造期窗体**还没有窗口句柄**，`Theme.Px` 里读的 `Control.DeviceDpi` 这时还是缺省 96；
+        ///   等高 DPI 显示器上句柄建好，真实 DPI 才生效 —— 于是「构造期按 96 算的 ClientSize」
+        ///   在 125% 下会整体偏小约 20%。OnLoad 时句柄已存在，这时算的才是对的。
+        ///   （本机是 100%，两种算法结果相同，所以看不出差别；这条是按 .NET 的 DPI 时序推的。）
+        /// </summary>
+        private void ApplyLayout()
+        {
+            ClientSize = new Size(Theme.Px(this, 380), Theme.Px(this, 168));
+
             int pad = Theme.Px(this, 24);
             int w = ClientSize.Width;
             int boxH = Theme.Px(this, 40);
@@ -94,6 +109,13 @@ namespace BreadLauncher
             int bw = Theme.Px(this, 104);
             _ok.Bounds = new Rectangle(w - pad - bw, by, bw, bh);
             _cancel.Bounds = new Rectangle(w - pad - bw * 2 - Theme.Px(this, 6), by, bw, bh);
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            try { ApplyLayout(); }   // 句柄已建：这时 DeviceDpi 才是真实值（高 DPI 下才看得出差别）
+            catch (Exception) { }
         }
 
         protected override void OnShown(EventArgs e)
@@ -112,17 +134,21 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush b = new SolidBrush(Theme.BgBottom))
-                g.FillRectangle(b, ClientRectangle);
-            Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold),
-                new Rectangle(Theme.Px(this, 24), Theme.Px(this, 16), ClientSize.Width - Theme.Px(this, 48), Theme.Px(this, 26)),
-                Theme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            Theme.FillRound(g, _boxRect, Theme.Px(this, 8), Theme.Surface);
-            Theme.DrawRound(g, _boxRect, Theme.Px(this, 8), _input.Focused ? Theme.Accent : Theme.Border, 1f);
-            using (Pen p = new Pen(Theme.Border))
-                g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            try
+            {
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush b = new SolidBrush(Theme.BgBottom))
+                    g.FillRectangle(b, ClientRectangle);
+                Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold),
+                    new Rectangle(Theme.Px(this, 24), Theme.Px(this, 16), ClientSize.Width - Theme.Px(this, 48), Theme.Px(this, 26)),
+                    Theme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                Theme.FillRound(g, _boxRect, Theme.Px(this, 8), Theme.Surface);
+                Theme.DrawRound(g, _boxRect, Theme.Px(this, 8), _input.Focused ? Theme.Accent : Theme.Border, 1f);
+                using (Pen p = new Pen(Theme.Border))
+                    g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            }
+            catch (Exception ex) { Theme.PaintCatch(this, e, "重命名对话框", ex); }
         }
     }
 
@@ -217,7 +243,7 @@ namespace BreadLauncher
             _all = candidates == null ? new List<AppEntry>() : candidates;
             UpdateTitle();
             // 540 宽：多放「来源 ▾ / 全选 / 全不选」三个按钮，筛选框还留得下
-            ClientSize = new Size(Theme.Px(this, 540), Theme.Px(this, 520));
+            // ClientSize 交给 ApplyLayout() 统一算（这里再写一遍只是死数字，会被它覆盖）
             _shownAt = DateTime.Now;
 
             _filter = new TextBox();
@@ -272,6 +298,23 @@ namespace BreadLauncher
             _ok.Click += delegate { Accept(); };
             Controls.Add(_ok);
 
+            ApplyLayout();
+
+            _timer = new System.Windows.Forms.Timer();
+            _timer.Interval = 160;
+            _timer.Tick += delegate { _timer.Stop(); ApplyFilter(); };
+
+            ApplyFilter();
+        }
+
+        /// <summary>
+        /// 按**当前** DPI 重算窗口大小与所有子控件位置（和 TextPromptForm 同一个理由：
+        /// 构造期还没有窗口句柄，`Theme.Px` 读到的 `DeviceDpi` 还是缺省 96，高 DPI 下会整体偏小）。
+        /// </summary>
+        private void ApplyLayout()
+        {
+            ClientSize = new Size(Theme.Px(this, 540), Theme.Px(this, 520));
+
             int pad = Theme.Px(this, 24);
             int w = ClientSize.Width;
             int onlyW = Theme.Px(this, 140);     // 「来源：桌面」+ 箭头（118 时文字会被省略号截成「来源：…」）
@@ -295,12 +338,13 @@ namespace BreadLauncher
 
             int listY = _filterRect.Bottom + Theme.Px(this, 10);
             _list.Bounds = new Rectangle(pad, listY, w - pad * 2, Math.Max(Theme.Px(this, 80), by - Theme.Px(this, 40) - listY));
+        }
 
-            _timer = new System.Windows.Forms.Timer();
-            _timer.Interval = 160;
-            _timer.Tick += delegate { _timer.Stop(); ApplyFilter(); };
-
-            ApplyFilter();
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            try { ApplyLayout(); }   // 句柄已建：这时 DeviceDpi 才是真实值（高 DPI 下才看得出差别）
+            catch (Exception) { }
         }
 
         private void RestartTimer()
@@ -588,7 +632,7 @@ namespace BreadLauncher
                 if (_onAdd != null)
                 {
                     try { _onAdd(en); }
-                    catch (Exception) { }
+                    catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "「添加应用」落盘回调抛异常（界面显示加好了，其实可能没写进去）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } }
                 }
             }
             ApplyFilter();
@@ -767,39 +811,43 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush b = new SolidBrush(Theme.BgBottom))
-                g.FillRectangle(b, ClientRectangle);
-            // 标题：左边「添加应用到「组名」」+ 右边「已有 N 个 · 已选 M 个」分开画。
-            // 合成一条的话，组名一长右边那半句就被省略号吃掉（用户反馈「挤得看不见」）。
-            int padL = Theme.Px(this, 24);
-            Font infoFont = Theme.Ui(9.5f);
-            int infoW = TextRenderer.MeasureText(g, _titleInfo, infoFont,
-                new Size(int.MaxValue, Theme.Px(this, 28)), TextFormatFlags.NoPrefix).Width + Theme.Px(this, 6);
-            int titleW = Math.Max(Theme.Px(this, 90), ClientSize.Width - padL * 2 - infoW - Theme.Px(this, 12));
-            Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold),
-                new Rectangle(padL, Theme.Px(this, 18), titleW, Theme.Px(this, 28)),
-                Theme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            Theme.DrawText(g, _titleInfo, infoFont,
-                new Rectangle(padL + titleW + Theme.Px(this, 12), Theme.Px(this, 18), infoW, Theme.Px(this, 28)),
-                Theme.TextDim, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
-            // 提示文字比较长、位置又窄，这里单独用 9pt 且允许省略，别挤到按钮上
-            Theme.FillRound(g, _filterRect, Theme.Px(this, 8), Theme.Surface);
-            Theme.DrawRound(g, _filterRect, Theme.Px(this, 8), _filter.Focused ? Theme.Accent : Theme.Border, 1f);
-            if (string.IsNullOrEmpty(_filter.Text))
+            try
             {
-                Theme.DrawText(g, "输入名字筛选…", Theme.Ui(10f),
-                    new Rectangle(_filterRect.X + Theme.Px(this, 12), _filterRect.Y, _filterRect.Width - Theme.Px(this, 24), _filterRect.Height),
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush b = new SolidBrush(Theme.BgBottom))
+                    g.FillRectangle(b, ClientRectangle);
+                // 标题：左边「添加应用到「组名」」+ 右边「已有 N 个 · 已选 M 个」分开画。
+                // 合成一条的话，组名一长右边那半句就被省略号吃掉（用户反馈「挤得看不见」）。
+                int padL = Theme.Px(this, 24);
+                Font infoFont = Theme.Ui(9.5f);
+                int infoW = TextRenderer.MeasureText(g, _titleInfo, infoFont,
+                    new Size(int.MaxValue, Theme.Px(this, 28)), TextFormatFlags.NoPrefix).Width + Theme.Px(this, 6);
+                int titleW = Math.Max(Theme.Px(this, 90), ClientSize.Width - padL * 2 - infoW - Theme.Px(this, 12));
+                Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold),
+                    new Rectangle(padL, Theme.Px(this, 18), titleW, Theme.Px(this, 28)),
+                    Theme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                Theme.DrawText(g, _titleInfo, infoFont,
+                    new Rectangle(padL + titleW + Theme.Px(this, 12), Theme.Px(this, 18), infoW, Theme.Px(this, 28)),
+                    Theme.TextDim, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+                // 提示文字比较长、位置又窄，这里单独用 9pt 且允许省略，别挤到按钮上
+                Theme.FillRound(g, _filterRect, Theme.Px(this, 8), Theme.Surface);
+                Theme.DrawRound(g, _filterRect, Theme.Px(this, 8), _filter.Focused ? Theme.Accent : Theme.Border, 1f);
+                if (string.IsNullOrEmpty(_filter.Text))
+                {
+                    Theme.DrawText(g, "输入名字筛选…", Theme.Ui(10f),
+                        new Rectangle(_filterRect.X + Theme.Px(this, 12), _filterRect.Y, _filterRect.Width - Theme.Px(this, 24), _filterRect.Height),
+                        Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                }
+                // 提示：右边一直顶到「完成」按钮左边，别只给 180px（长提示会被省略号吃掉）
+                int hintW = Math.Max(Theme.Px(this, 120), _cancel.Left - padL - Theme.Px(this, 10));
+                Theme.DrawText(g, _hint, Theme.Ui(9f),
+                    new Rectangle(padL, _cancel.Top, hintW, Theme.Px(this, 36)),
                     Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                using (Pen p = new Pen(Theme.Border))
+                    g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
             }
-            // 提示：右边一直顶到「完成」按钮左边，别只给 180px（长提示会被省略号吃掉）
-            int hintW = Math.Max(Theme.Px(this, 120), _cancel.Left - padL - Theme.Px(this, 10));
-            Theme.DrawText(g, _hint, Theme.Ui(9f),
-                new Rectangle(padL, _cancel.Top, hintW, Theme.Px(this, 36)),
-                Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            using (Pen p = new Pen(Theme.Border))
-                g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            catch (Exception ex) { Theme.PaintCatch(this, e, "添加应用选择器", ex); }
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -876,7 +924,7 @@ namespace BreadLauncher
         private void Init(List<string> current)
         {
             if (current != null) _dirs.AddRange(current);
-            ClientSize = new Size(Theme.Px(this, 620), Theme.Px(this, 440));
+            // ClientSize 交给 ApplyLayout() 统一算（这里再写一遍只是死数字，会被它覆盖）
 
             _list = new ListBox();
             _list.BorderStyle = BorderStyle.None;
@@ -915,6 +963,18 @@ namespace BreadLauncher
             _ok.Click += delegate { DialogResult = DialogResult.OK; };
             Controls.Add(_ok);
 
+            ApplyLayout();
+            RefreshList();
+        }
+
+        /// <summary>
+        /// 按**当前** DPI 重算窗口大小与所有子控件位置（和另外两个对话框同一个理由：
+        /// 构造期还没有窗口句柄，`Theme.Px` 读到的 `DeviceDpi` 还是缺省 96，高 DPI 下会整体偏小）。
+        /// </summary>
+        private void ApplyLayout()
+        {
+            ClientSize = new Size(Theme.Px(this, 620), Theme.Px(this, 440));
+
             int pad = Theme.Px(this, 24);
             _headRect = new Rectangle(pad, Theme.Px(this, 18), ClientSize.Width - pad * 2, Theme.Px(this, 26));
             // 提示分两行：合成一行在 520 宽里会被省略号吃掉后半句（实测就是这样）
@@ -935,7 +995,13 @@ namespace BreadLauncher
             int listY = Theme.Px(this, 110);     // 标题 18/44 + 两行提示 + 提醒行（84）之后再开始列表
             _list.Bounds = new Rectangle(pad, listY, Math.Max(Theme.Px(this, 80), ClientSize.Width - pad * 2),
                                          Math.Max(Theme.Px(this, 60), by - Theme.Px(this, 14) - listY));
-            RefreshList();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            try { ApplyLayout(); }   // 句柄已建：这时 DeviceDpi 才是真实值（高 DPI 下才看得出差别）
+            catch (Exception) { }
         }
 
         private void RefreshList()
@@ -1054,23 +1120,27 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush b = new SolidBrush(Theme.BgBottom))
-                g.FillRectangle(b, ClientRectangle);
-            Theme.DrawText(g, "自定义扫描文件夹", Theme.Ui(11f, FontStyle.Bold), _headRect, Theme.TextPrimary,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            Theme.DrawText(g, _hint1, Theme.Ui(9f),
-                new Rectangle(_hintRect.X, _hintRect.Y, _hintRect.Width, Theme.Px(this, 20)), Theme.TextDim,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            Theme.DrawText(g, _hint2, Theme.Ui(9f),
-                new Rectangle(_hintRect.X, _hintRect.Y + Theme.Px(this, 20), _hintRect.Width, Theme.Px(this, 20)), Theme.TextDim,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            if (!string.IsNullOrEmpty(_warn))
-                Theme.DrawText(g, _warn, Theme.Ui(9f), _warnRect, Theme.Accent,
+            try
+            {
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush b = new SolidBrush(Theme.BgBottom))
+                    g.FillRectangle(b, ClientRectangle);
+                Theme.DrawText(g, "自定义扫描文件夹", Theme.Ui(11f, FontStyle.Bold), _headRect, Theme.TextPrimary,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            using (Pen p = new Pen(Theme.Border))
-                g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+                Theme.DrawText(g, _hint1, Theme.Ui(9f),
+                    new Rectangle(_hintRect.X, _hintRect.Y, _hintRect.Width, Theme.Px(this, 20)), Theme.TextDim,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                Theme.DrawText(g, _hint2, Theme.Ui(9f),
+                    new Rectangle(_hintRect.X, _hintRect.Y + Theme.Px(this, 20), _hintRect.Width, Theme.Px(this, 20)), Theme.TextDim,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                if (!string.IsNullOrEmpty(_warn))
+                    Theme.DrawText(g, _warn, Theme.Ui(9f), _warnRect, Theme.Accent,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                using (Pen p = new Pen(Theme.Border))
+                    g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            }
+            catch (Exception ex) { Theme.PaintCatch(this, e, "自定义扫描文件夹", ex); }
         }
     }
 }

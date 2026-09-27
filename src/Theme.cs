@@ -95,6 +95,49 @@ namespace BreadLauncher
 
         // ---------------- 缩放与绘制 ----------------
 
+        /// <summary>绘制异常日志去重用的「上一次记了什么」（见 PaintCatch）。</summary>
+        private static string _lastPaintErrorLogged;
+
+        /// <summary>
+        /// 绘制异常的**统一兜底**：WinForms 遇到 OnPaint 里抛异常会把整块客户区画成
+        /// 「白底 + 红色大叉」，用户只会说「报错了」，一点线索都没有。
+        /// 这里统一：① 画一个朴素底色（不吓人）② 把类型 / 消息 / 堆栈写进日志。
+        /// ★规矩（AGENTS.md 坑 6）：**每个 OnPaint 都要挂这个，改绘制代码时别把它去掉。**
+        /// ★为什么做成公共函数：以前 7 个 OnPaint 里只有 2 个自带 try/catch，其余 5 个裸奔 ——
+        ///   分散复制粘贴必然会漏，集中一处就不会。
+        /// ★为什么按「位置 + 异常摘要」去重：绘制是每帧跑的，同一个异常会**每帧写一条日志**
+        ///   （实测连打 200 次 = 32KB），几分钟就把日志刷满、还会让 1MB 轮转反复删 log.1.txt，
+        ///   把真正有用的历史挤掉。同一条只记第一次，其他不同的仍然照记。
+        /// </summary>
+        public static void PaintCatch(Control c, PaintEventArgs e, string what, Exception ex)
+        {
+            try
+            {
+                if (e != null && e.Graphics != null && c != null)
+                {
+                    using (SolidBrush b = new SolidBrush(BgBottom))
+                        e.Graphics.FillRectangle(b, c.ClientRectangle);
+                }
+            }
+            catch (Exception) { }
+            try
+            {
+                if (Program.AppDir != null && ex != null)
+                {
+                    string mid = (what ?? "") + "|" + ex.GetType().Name + "|" + ex.Message;
+                    if (_lastPaintErrorLogged != mid)
+                    {
+                        _lastPaintErrorLogged = mid;
+                        ConfigStore.Log(Program.AppDir, "★绘制异常（界面本来会变成白底红叉）"
+                            + (string.IsNullOrEmpty(what) ? "" : " @ " + what) + "："
+                            + ex.GetType().Name + "：" + ex.Message + "  @  " + ex.StackTrace
+                            + "   [同一条只记第一次，后面重复的不再刷日志]");
+                    }
+                }
+            }
+            catch (Exception) { }
+        }
+
         public static int Px(Control c, double v)
         {
             int dpi = 96;
@@ -160,8 +203,7 @@ namespace BreadLauncher
         }
 
         /// <summary>把 rect 夹进当前裁剪区；整块在外返回 false（GDI 不认 GDI+ 裁剪，得自己来）。</summary>
-        private static bool ClampToClip(Graphics g, ref Rectangle rect)
-        {
+        private static bool ClampToClip(Graphics g, ref Rectangle rect)        {
             RectangleF vis = g.VisibleClipBounds;
             if (vis.Width <= 0 || vis.Height <= 0) return false;
             if (rect.Right <= vis.Left || rect.Left >= vis.Right || rect.Bottom <= vis.Top || rect.Top >= vis.Bottom)
@@ -303,9 +345,12 @@ namespace BreadLauncher
             string safe = name == null ? string.Empty : name;
             string letter = Initial(safe);
             int h = 17;
-            for (int i = 0; i < safe.Length; i++) h = h * 31 + safe[i];
-            if (h < 0) h = -h;
-            Color c = TilePalette[h % TilePalette.Length];
+            for (int i = 0; i < safe.Length; i++) h = unchecked(h * 31 + safe[i]);
+            // ★`& 0x7FFFFFFF` 把符号位抹掉，保证下标一定落在 [0, 长度)：
+            //   旧写法是 `if (h < 0) h = -h;`，碰上 int.MinValue 时 `-int.MinValue` 还是负数，
+            //   取模结果是负的 → 数组越界。现在**只**能靠「8 个颜色恰好整除 2^31」侥幸不崩
+            //   （int.MinValue % 8 == 0），哪天调色板加成 9 色就会当场崩。
+            Color c = TilePalette[(h & 0x7FFFFFFF) % TilePalette.Length];
             FillRound(g, r, radius, c);
             float fs = Math.Max(7f, r.Height * 0.44f);
             TextRenderer.DrawText(g, letter, Ui(fs, FontStyle.Bold), r, Color.White,

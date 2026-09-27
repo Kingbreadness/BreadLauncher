@@ -1,10 +1,23 @@
 // MainForm.cs —— 面板本体：大文件夹分组、启动、右键菜单
 //
-// 交互约定（和用户确认过的）：
-//   · 点大文件夹里的小图标 = 直接启动，面板自动关闭
+// 交互约定（**照代码重写过一遍**，2026-09-27 核实）：
+//   · 点大文件夹里的小图标 = 直接启动。**默认启动完不关面板**，可以连着点好几个
+//     （只有设置里打开「启动应用后：关闭面板」时才关，默认关闭：ConfigStore.CloseAfterLaunch = false）
 //   · 点大文件夹主体 = 打开「添加应用」选择器
 //   · 右键小图标 / 大文件夹 / 空白 = 各自的菜单
-//   · Esc、点空白处、失去焦点 = 关闭；关闭 = 进程退出，没有托盘、没有后台
+//   · 按住空白拖动 = 搬面板（**点空白不再关面板** —— 那和拖动打架）
+//   · 关掉面板 = 进程退出，没有托盘、没有后台
+//
+// ★★关面板的途径**只有这 5 条，全是用户主动触发**（改之前先数一遍）：
+//     ① 底栏「关闭」按钮（:400）
+//     ② Esc 键（:1362）
+//     ③ 启动应用成功 + 设置里打开了「启动应用后：关闭面板」（:2035）
+//     ④ 右键菜单「打开文件所在位置」（:2311）
+//     ⑤ 右键菜单「打开软件所在文件夹」（:2395）
+// ★★**已经删掉、别再装回来**（用户明确要求去掉的）：
+//     ✗ 点空白处关闭    ✗ 失去焦点自动关闭
+//     这两条以前都有，用户的原话感受是「被别的窗口压住时点它一下，面板自己就没了」。
+//     本文件头以前把这两条当成"现行约定"写着 —— 照着它改代码，正好把用户受不了的行为装回去。
 
 using System;
 using System.Collections.Generic;
@@ -595,11 +608,16 @@ namespace BreadLauncher
             // 固定拖动把手：顶部正中一根小横条（和顶部 14px 的「拉边框」热区**有重叠**，
             // 靠 OnMouseDown 的判断顺序解决：把手 → 边框缩放 → 文件夹拖动 → 空白搬动）
             // 尺寸按「普通人点得准」定：可见条 60×6，可抓范围 120×20（上下都留了余量）
+            // ★可抓范围**下沿必须收在分组区上沿**：原来固定 y=6、高 20 → 伸到 y=26，
+            //   而第一行文件夹从 _groupTop（18）就开始，于是把手把第一行中间那一列**压住 8px** ——
+            //   点那儿本来是点文件夹，结果变成搬面板。
             int gripW = Theme.Px(this, 60);
             int gripH = Theme.Px(this, 6);
             _gripRect = new Rectangle((w - gripW) / 2, Theme.Px(this, 10), gripW, gripH);
-            _gripHit = new Rectangle(_gripRect.X - Theme.Px(this, 30), Theme.Px(this, 6),
-                                     _gripRect.Width + Theme.Px(this, 60), Theme.Px(this, 20));
+            int gripTop = Theme.Px(this, 6);
+            int gripHitH = Math.Max(Theme.Px(this, 10), Math.Min(Theme.Px(this, 20), _groupTop - gripTop));
+            _gripHit = new Rectangle(_gripRect.X - Theme.Px(this, 30), gripTop,
+                                     _gripRect.Width + Theme.Px(this, 60), gripHitH);
 
             int cols = Columns;
             int gridW = cols * TileW + (cols - 1) * GapX;
@@ -823,18 +841,7 @@ namespace BreadLauncher
                         Rectangle inner = cell;
                         Rectangle nameR = Rectangle.Empty;
                         if (withLabel)
-                        {
-                            // ★格子只有 40 来像素宽：试过两行折行，结果图标被压到 12px（太小认不出），
-                            //   所以最终定成**一行 + 省略号**、图标留 22 来像素；要看全名就悬停（浮层提示）。
-                            int labelH = Theme.Px(this, 14);
-                            inner = new Rectangle(cell.X, cell.Y, cell.Width,
-                                                  Math.Max(Theme.Px(this, 12), cell.Height - labelH - Theme.Px(this, 2)));
-                            // 标签**借用两侧间隙**（每个格子各借一半），能多显示一个字左右；不会压到邻居
-                            int borrow = Math.Max(0, miniGap / 2);
-                            nameR = new Rectangle(cell.X - borrow, inner.Bottom + Theme.Px(this, 1),
-                                                  cell.Width + borrow * 2, labelH);
-                            nameR = Rectangle.Intersect(nameR, new Rectangle(x, y, tw, thAll));   // 别跑出文件夹方块
-                        }
+                            withLabel = NameLabelLayout(cell, miniGap, tw, thAll, x, y, out inner, out nameR);
                         Bitmap icon = _icons == null ? null : _icons.Get(cellApp, MiniIconSize);
                         if (icon == null)
                         {
@@ -917,7 +924,7 @@ namespace BreadLauncher
             //   实测（build\audit\0b-recheck-this-window.md §三）：11 组 / 604x738 时
             //   y=678..682 命中 slot=0/1/2、y=690..717 命中 slot=3/4/5。
             //   判据：格子完整可见才画（坑清单第 3 条）—— 命中同样只认可见区。
-            if (p.Y < _groupTop || p.Y > _groupTop + _groupHeight) return -1;
+            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;   // ★半开区间：和 SetClip 的 [_groupTop, _groupTop+_groupHeight) 对齐（原来用 > 会多算最下面那一行，点得到但一个像素没画）
             int cols = Columns;
             int tw = TileW;
             int thAll = TileH;
@@ -985,8 +992,12 @@ namespace BreadLauncher
             int p;
             if (_page.TryGetValue(gv.Group, out p) == false) return 0;
             int max = PageCount(gv) - 1;
-            if (p < 0) return 0;
-            if (p > max) return max;
+            // ★夹取之后要**写回**：组先「瘦身」（页数变少）再「回涨」时，
+            //   残留的那个第 3 页会在回涨后被原样取出来，跳到最后一页。
+            //   写回之后它就跟着当前页数一起收敛了（两条调用路径共用同一份状态）。
+            if (p < 0) p = 0;
+            if (p > max) p = max;
+            _page[gv.Group] = p;
             return p;
         }
 
@@ -1083,7 +1094,7 @@ namespace BreadLauncher
         private int SlotIndexAt(Point p)
         {
             if (_groups.Count == 0) return -1;
-            if (p.Y < _groupTop || p.Y > _groupTop + _groupHeight) return -1;
+            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;   // ★半开区间：和 SetClip 的 [_groupTop, _groupTop+_groupHeight) 对齐（原来用 > 会多算最下面那一行，点得到但一个像素没画）
             int cols = Columns;
             int col = (p.X - _groupLeft + GapX / 2) / (TileW + GapX);
             int row = (p.Y - _groupTop + _scrollY + GapY / 2) / (TileH + GapY);
@@ -1208,6 +1219,7 @@ namespace BreadLauncher
             if (_panelResizing)
             {
                 _panelResizing = false;
+                _downValid = false;            // ★见下面 L1266 的说明：这三条 return 都必须作废「本次按下」
                 EndDrag();                     // 停掉合并定时器并落实最后的大小
                 bool vertical = (_lastResizeZone & 3) != 0;
                 _resizeZone = 0;
@@ -1222,6 +1234,7 @@ namespace BreadLauncher
             if (_panelMoving)
             {
                 _panelMoving = false;
+                _downValid = false;            // ★同上
                 EndDrag();                     // 停掉合并定时器并落实最后的位置
                 if (_panelMoved)
                 {
@@ -1231,7 +1244,8 @@ namespace BreadLauncher
                     Invalidate();
                     return;   // 搬过面板了，这一次不算「点空白关闭」
                 }
-                // 没移动 → 继续往下走：点空白 = 关闭（原来那条路）
+                // 没移动 → 继续往下走：**点空白什么都不做**（关闭那条路早就删了；能走到这里说明
+                // 按下去几乎没动，就当成一次普通点击交给下面处理）
             }
 
             // 拖动结束：按落点重排分组，并且这次不能再当成「点击」
@@ -1240,6 +1254,7 @@ namespace BreadLauncher
                 int from = _dragFrom;
                 int to = _dragTo;
                 _dragActive = false;
+                _downValid = false;            // ★同上
                 _dragFrom = -1;
                 _dragTo = -1;
                 Cursor = Cursors.Default;
@@ -1252,6 +1267,13 @@ namespace BreadLauncher
 
             // ★关键：只要按下去之后移动过几个像素，这一次就**不算点击** ——
             // 既不会启动应用，也不会把面板关掉。否则「想拖一下」很容易变成「点空白 = 关闭」。
+            // ★★而且：命中这条判定时**不分鼠标键**，所以它会被「拖完之后的下一次右键」误伤 ——
+            //    右键在 OnMouseDown 里不刷新 `_downPoint`（只有左键刷），于是右键拿的是上一次左键的
+            //    按下点；拖完面板松手时 `_downPoint` 还停在拖动的起点（相隔几十像素）→ 这次右键
+            //    直接在这里 return，**菜单不弹**，要再点一次才有。
+            //    → 修法就是上面那三条 return 之前把 `_downValid` 作废（拖完了，这一次按下已经结束）。
+            //    （2026-09-27 静态复现：`_panelMoved`/`_dragActive`/`_panelResizing` 三条路径都会跳过
+            //      下面的 `_downValid = false`；探针里有对应的回归断言。）
             if (_downValid && Math.Abs(e.X - _downPoint.X) + Math.Abs(e.Y - _downPoint.Y) > Theme.Px(this, 3))
             {
                 _downValid = false;
@@ -1412,7 +1434,9 @@ namespace BreadLauncher
         {
             try { _dragTimer.Stop(); } catch (Exception) { }
             try { PersistSettings(); }
-            catch (Exception) { }
+            // ★关面板是**最后一次落盘**：异常被吞掉的话，这一次会话改的东西全丢，而且日志里
+            //   一个字都不会有（用户只会觉得"我改的分组怎么没了"）。所以这里必须留痕。
+            catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "关面板时最后一次落盘抛异常（本次改动可能没保存）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } }
             base.OnFormClosed(e);
         }
 
@@ -1436,8 +1460,41 @@ namespace BreadLauncher
             //   每都记一遍只会把日志刷满，反而找不到「谁把分组改没了」那一行。
             if (r == SaveResult.Written) LogGroupState();
             if (r == SaveResult.Failed && string.IsNullOrEmpty(_lastWriteFailText))
-                _lastWriteFailText = ConfigStore.LastWriteError;
+                _lastWriteFailText = ConfigStore.LastSettingsWriteError ?? ConfigStore.LastWriteError;
             return r != SaveResult.Failed;
+        }
+
+        /// <summary>
+        /// 算出小图标那一格「名字常驻显示」要占的地方。
+        /// ★为什么单独一个方法：探针要能**直接断言**「小档位下宁可不画名字，也不把图标压到认不出」
+        ///   （格子只有 40 来像素宽，名字占 14px 之后图标会掉到 14~18px）。
+        /// ★注意这是**要求**，真正画的时候还要跟格子做交集（下面 WithLabel 那一段）。
+        /// </summary>
+        private bool NameLabelLayout(Rectangle cell, int miniGap, int tw, int thAll, int x, int y,
+                                     out Rectangle inner, out Rectangle nameR)
+        {
+            int labelH = Theme.Px(this, 14);
+            int want = Math.Max(Theme.Px(this, 12), cell.Height - labelH - Theme.Px(this, 2));
+            // ★阈值为什么是 Px(17)：三档实测（MiniBox = (TileW - 2*MiniPad - 2*MiniGap) / 3）——
+            //     FolderScale  85 → 格 30px → 让出名字后图标只剩 14px（认不出）→ **不画**
+            //     FolderScale 100 → 格 35px → 剩 19px → 还认得 → **画**（默认档必须画！）
+            //     FolderScale 120 → 格 42px → 剩 26px → **画**
+            //   ★踩过的坑：阈值一度定成 Px(22)，结果**默认档 100 也变成不画** —— 功能静默失效，
+            //     而当时那条探针断言写成了 `(drew && h>=X) || drew == false`（后半句恒真）根本抓不到。
+            //     现在断言拆成「85 不画 / 100 要画 / 120 要画」三条分别查。
+            if (want < Theme.Px(this, 17))
+            {
+                inner = cell;
+                nameR = Rectangle.Empty;
+                return false;
+            }
+            inner = new Rectangle(cell.X, cell.Y, cell.Width, want);
+            // 标签**借用两侧间隙**（每个格子各借一半），能多显示一个字左右；不会压到邻居
+            int borrow = Math.Max(0, miniGap / 2);
+            nameR = new Rectangle(cell.X - borrow, inner.Bottom + Theme.Px(this, 1),
+                                  cell.Width + borrow * 2, labelH);
+            nameR = Rectangle.Intersect(nameR, new Rectangle(x, y, tw, thAll));   // 别跑出文件夹方块
+            return true;
         }
 
         /// <summary>把当前分组概况写进日志（谁在什么时候把分组改成了什么样，事后查得到）。</summary>
@@ -2026,10 +2083,7 @@ namespace BreadLauncher
         /// <summary>自检用：和右键弹出的**同源**菜单副本（不用真的弹窗）。</summary>
         internal ContextMenuStrip BuildEntryMenu(GroupView gv, AppEntry en)
         {
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Renderer = new DarkMenuRenderer();
-            menu.ShowImageMargin = false;
-            menu.Font = Theme.Ui(9.75f);
+            ContextMenuStrip menu = NewMenu(false);
             FillEntryMenu(menu, gv, en);
             return menu;
         }
@@ -2040,12 +2094,10 @@ namespace BreadLauncher
             _suppressDeactivate = true;
             try
             {
-                ContextMenuStrip menu = new ContextMenuStrip();
-                menu.Renderer = new DarkMenuRenderer();
-                menu.ShowImageMargin = false;
-                menu.Font = Theme.Ui(9.75f);
+                ContextMenuStrip menu = NewMenu(false);
                 FillEntryMenu(menu, gv, en);
                 menu.Closed += delegate { _suppressDeactivate = false; };
+                KeepMenu(menu);
                 menu.Show(this, PointToClient(Cursor.Position));
             }
             catch (Exception)
@@ -2132,10 +2184,7 @@ namespace BreadLauncher
             _suppressDeactivate = true;
             try
             {
-                ContextMenuStrip menu = new ContextMenuStrip();
-                menu.Renderer = new DarkMenuRenderer();
-                menu.ShowImageMargin = false;
-                menu.Font = Theme.Ui(9.75f);
+                ContextMenuStrip menu = NewMenu(false);
 
                 GroupView owner = gv;
                 menu.Items.Add("添加应用…", null, delegate { OpenPicker(owner); });
@@ -2149,6 +2198,7 @@ namespace BreadLauncher
                 menu.Items.Add("删除分组", null, delegate { DeleteGroup(owner); });
 
                 menu.Closed += delegate { _suppressDeactivate = false; };
+                KeepMenu(menu);
                 menu.Show(this, PointToClient(Cursor.Position));
             }
             catch (Exception)
@@ -2157,20 +2207,52 @@ namespace BreadLauncher
             }
         }
 
+        /// <summary>
+        /// 建一个统一风格的右键菜单。★**只管建、不管 Dispose** —— 收尾交给 <see cref="KeepMenu"/>。
+        /// `ContextMenuStrip` 是 `Component`，不 Dispose 就一直挂在窗体的组件表里（还有它的
+        /// `DarkMenuRenderer` 和每一项的 `Font` 引用）；而这些菜单是**每次右键都新建一个**的，
+        /// 用一天下来就是几百个。
+        /// </summary>
+        private ContextMenuStrip NewMenu(bool showChecks)
+        {
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Renderer = new DarkMenuRenderer();
+            menu.ShowImageMargin = showChecks;
+            menu.Font = Theme.Ui(9.75f);
+            return menu;
+        }
+
+        private ContextMenuStrip _lastMenu;
+
+        /// <summary>
+        /// 记下「这一个」是当前菜单，并把**上一个**收掉。
+        /// ★为什么不是「在 Closed 回调里 Dispose」：`menu.Show(...)` 会一直阻塞到菜单关闭，
+        ///   如果 Closed 里就 Dispose，`Show` 返回时对象已经没了 —— 历史事故（AGENTS.md 坑 13）。
+        ///   换成「下一个菜单弹出来时再收上一个」：那时上一个早已关闭、`Show` 也早已返回，安全。
+        /// </summary>
+        private void KeepMenu(ContextMenuStrip menu)
+        {
+            ContextMenuStrip old = _lastMenu;
+            _lastMenu = menu;
+            if (old != null && object.ReferenceEquals(old, menu) == false)
+            {
+                try { old.Dispose(); }
+                catch (Exception) { }
+            }
+        }
+
         private void ShowEmptyMenu()
         {
             _suppressDeactivate = true;
             try
             {
-                ContextMenuStrip menu = new ContextMenuStrip();
-                menu.Renderer = new DarkMenuRenderer();
-                menu.ShowImageMargin = false;
-                menu.Font = Theme.Ui(9.75f);
+                ContextMenuStrip menu = NewMenu(false);
 
                 menu.Items.Add("新建分组…", null, delegate { NewGroup(); });
                 menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
 
                 menu.Closed += delegate { _suppressDeactivate = false; };
+                KeepMenu(menu);
                 menu.Show(this, PointToClient(Cursor.Position));
             }
             catch (Exception)
@@ -2184,14 +2266,12 @@ namespace BreadLauncher
             _suppressDeactivate = true;
             try
             {
-                ContextMenuStrip menu = new ContextMenuStrip();
-                menu.Renderer = new DarkMenuRenderer();
-                menu.ShowImageMargin = true;      // 开关项要看得见打勾（见 ToggleItem）
-                menu.Font = Theme.Ui(9.75f);
+                ContextMenuStrip menu = NewMenu(true);
 
                 FillSettingsMenu(menu);
 
                 menu.Closed += delegate { _suppressDeactivate = false; };
+                KeepMenu(menu);
                 menu.Show(_settingsBtn, new Point(0, 0), ToolStripDropDownDirection.AboveLeft);
             }
             catch (Exception)
@@ -2244,10 +2324,7 @@ namespace BreadLauncher
         /// <summary>自检用：和齿轮里弹出的**同源**设置菜单副本（不用真的弹窗）。</summary>
         internal ContextMenuStrip BuildSettingsMenu()
         {
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Renderer = new DarkMenuRenderer();
-            menu.ShowImageMargin = true;      // 留出打勾那一列：开关项的「当前状态」要能一眼看见
-            menu.Font = Theme.Ui(9.75f);
+            ContextMenuStrip menu = NewMenu(true);   // 留出打勾那一列：开关项的「当前状态」要能一眼看见
             FillSettingsMenu(menu);
             return menu;
         }

@@ -191,14 +191,20 @@ namespace BreadLauncher
                 string[] removedMsg = new string[] { "" };
                 AppEntry removeTarget = gv.Apps[gv.Apps.Count - 1]; // 最后一个：只有「查看全部」里能碰到它
                 Timer timer = new Timer();
-                timer.Interval = 1500;
+                timer.Interval = 300;
                 int gaTries = 0;
                 timer.Tick += delegate
                 {
-                    timer.Stop();
                     bool gaOpen = false;
                     foreach (Form open in Application.OpenForms)
                         if (open is GroupAppsForm) { gaOpen = true; break; }
+                    // ★原来这里第一件事就是 `timer.Stop()` —— 窗口要是晚于 1.5 秒才开出来，
+                    //   回调只跑一次就"定生死"，断言随机失败（本窗口实测：同一份配置两次跑，
+                    //   一次 FAIL=7、一次 FAIL=2，差别全在这条）。改成**轮询到开出来为止**，
+                    //   最多等 20×300ms = 6 秒，超时才认账（探针规矩：别用固定定时器一次定生死）。
+                    gaTries++;
+                    if (gaOpen == false && gaTries < 20) return;
+                    timer.Stop();
                     if (gaOpen == false)
                     {
                         // ★和「添加应用」那个定时器一个道理：固定 1500ms 一次定生死会偶发假失败
@@ -1103,8 +1109,15 @@ namespace BreadLauncher
             Check(zoneIn != 0 && zoneOut == 0,
                 "边缘热区（左右上 14px / 下 12px）：靠边 4px 能拉大小（zone=" + zoneIn + "）、离边 24px 不会误触发（zone=" + zoneOut + "）");
             Rectangle gripHit = (Rectangle)typeof(MainForm).GetField("_gripHit", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
-            Check(gripHit.Height >= Theme.Px(f, 18) && gripHit.Width >= Theme.Px(f, 100),
-                "拖动把手可抓范围 = " + gripHit.Width + "x" + gripHit.Height + "（普通人点得准）");
+            // ★两条一起查：① 够大好点中 ② **下沿不能越过分组区上沿**。
+            //   原来只查①，于是把手一路伸到第一行文件夹里 8px（点文件夹变成了搬面板）；
+            //   收窄到 groupTop 之后高度自然从 20 降到 12，所以①的门槛跟着调到「够用」而不是「20」。
+            int grpTop = (int)Field(f, "_groupTop");
+            Check(gripHit.Height >= Theme.Px(f, 10) && gripHit.Width >= Theme.Px(f, 100)
+                  && gripHit.Bottom <= grpTop,
+                "拖动把手可抓范围 = " + gripHit.Width + "x" + gripHit.Height
+                + "，下沿 " + gripHit.Bottom + " 不越过分组区上沿 " + grpTop
+                + "（够大好点中，又不吃第一行文件夹）");
 
             // 启动应用后**不关**面板（用户要连着启动好几个）：默认不关，设置里打开才关
             MethodInfo scl = typeof(MainForm).GetMethod("ShouldCloseAfterLaunch", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -1223,7 +1236,7 @@ namespace BreadLauncher
 
             // ---------- 6) 图标缓存里不许有「彩色乱码」（用户报过 Wallpaper Engine 的雪花图标） ----------
             // 根因：`new Icon(ico, size, size).ToBitmap()` 碰上 **PNG 压缩帧** 会读成噪点（见 IconService
-            // 的 DecodeIcoPngFrame）。这条断言把「整批图标里有没有乱码」钉住 —— 换台机器、换批应用也成立。
+            // 的 DecodeIcoFrame）。这条断言把「整批图标里有没有乱码」钉住 —— 换台机器、换批应用也成立。
             try
             {
                 string iconDir = Path.Combine(Program.AppDir, "cache", "icons");
@@ -1811,6 +1824,192 @@ namespace BreadLauncher
                 catch (Exception) { }
             }
             catch (Exception exAbout) { Check(false, "「关于」断言异常：" + exAbout.Message); }
+
+            // ★★ 变体：源码级体检（2026-09-27 那批「★低」里的两条硬规矩）
+            //   ① 每个 OnPaint 都必须有绘制兜底（不然 WinForms 画白底红叉，什么线索都没有）
+            //   ② 日志必须轮转（不然用户装完不管，一年能涨到几十 MB）
+            try
+            {
+                string root = Path.GetDirectoryName(Program.AppDir);       // build\ 的上一级 = 仓库根
+                string srcDir = Path.Combine(root, "src");
+                if (Directory.Exists(srcDir) == false)
+                {
+                    Say("（跳过：找不到 src 目录（" + srcDir + "），源码级体检跑不了）");
+                    NoteSkip("变体：找不到 src 目录，OnPaint 兜底 / 日志轮转这两条源码体检跑不了");
+                }
+                else
+                {
+                    // ① 逐个 OnPaint：方法体里必须出现 try 或 PaintAll/PaintCatch
+                    List<string> naked = new List<string>();
+                    int painted = 0;
+                    string[] files = Directory.GetFiles(srcDir, "*.cs");
+                    for (int fi = 0; fi < files.Length; fi++)
+                    {
+                        string[] ls = File.ReadAllLines(files[fi], Encoding.UTF8);
+                        for (int i = 0; i < ls.Length; i++)
+                        {
+                            if (System.Text.RegularExpressions.Regex.IsMatch(ls[i], @"override\s+void\s+OnPaint") == false) continue;
+                            painted++;
+                            int depth = 0; bool started = false; int end = -1;
+                            for (int j = i; j < Math.Min(ls.Length, i + 90); j++)
+                            {
+                                depth += ls[j].Split('{').Length - ls[j].Split('}').Length;
+                                if (!started && depth > 0) started = true;
+                                if (started && depth == 0) { end = j; break; }
+                            }
+                            StringBuilder body = new StringBuilder();
+                            for (int k = i + 1; k < (end < 0 ? ls.Length : end); k++) body.AppendLine(ls[k]);
+                            string bd = body.ToString();
+                            if (bd.Contains("try") == false && bd.Contains("PaintAll(") == false && bd.Contains("PaintCatch(") == false)
+                                naked.Add(Path.GetFileName(files[fi]) + ":" + (i + 1));
+                        }
+                    }
+                    Check(painted > 0 && naked.Count == 0,
+                        "源码里 " + painted + " 个 OnPaint 全都有绘制兜底"
+                        + (naked.Count == 0 ? "" : "（裸奔的：" + string.Join("、", naked.ToArray()) + "）")
+                        + " —— 漏一个就会「白底红叉 + 零线索」");
+
+                    // ② 日志轮转：塞一个超阈值的 log.txt，写一行后必须被挪走、新文件重新开始
+                    string tdir = Path.Combine(Program.AppDir, "probe-logrotate");
+                    try { if (Directory.Exists(tdir)) Directory.Delete(tdir, true); }
+                    catch (Exception) { }
+                    try
+                    {
+                        Directory.CreateDirectory(Path.Combine(tdir, "cache"));
+                        string lf = ConfigStore.LogFile(tdir);
+                        File.WriteAllText(lf, new string('x', 1200000), Encoding.UTF8);   // 1.2 MB > 阈值 1 MB
+                        long before = new FileInfo(lf).Length;
+                        // ★轮转检查节流到「一分钟一次」（防抖）：探针刚启动时就查过一次，这里必须
+                        //   把节流戳重置掉，否则这一分钟内的检查全被跳过 → 假 FAIL（第一版就这么栽的）。
+                        System.Reflection.FieldInfo stamp = typeof(ConfigStore)
+                            .GetField("_logSizeCheckedAt", BindingFlags.NonPublic | BindingFlags.Static);
+                        if (stamp != null) stamp.SetValue(null, DateTime.MinValue);
+                        ConfigStore.Log(tdir, "轮转测试");
+                        string rolled = Path.Combine(Path.GetDirectoryName(lf), "log.1.txt");
+                        long after = new FileInfo(lf).Length;
+                        Check(File.Exists(rolled) && before > 1000000 && after < 100000,
+                            "日志超 1MB 会轮转：原 " + before + " 字节 → 挪成 log.1.txt（在=" + File.Exists(rolled)
+                            + "），新 log.txt 只有 " + after + " 字节");
+                    }
+                    finally
+                    {
+                        try { if (Directory.Exists(tdir)) Directory.Delete(tdir, true); }
+                        catch (Exception) { }
+                    }
+                }
+            }
+            catch (Exception exSrc) { Check(false, "源码级体检异常：" + exSrc.Message); }
+
+            // ★★ 变体：分组「瘦身再回涨」之后不能跳页（PageOf 夹取要写回）
+            try
+            {
+                List<GroupView> gvs = (List<GroupView>)Field(f, "_groups");
+                GroupView big = null;
+                for (int i = 0; i < gvs.Count; i++) if (gvs[i].Apps != null && gvs[i].Apps.Count > 9) { big = gvs[i]; break; }
+                if (big == null)
+                {
+                    Say("（跳过：这份配置里没有超过 9 个应用的组，测不了「瘦身再回涨」）");
+                    NoteSkip("变体：没有超过 9 个应用的组，测不了页码残留");
+                }
+                else
+                {
+                    // 需要直接调 MainForm 的私有方法 SetPage / PageOf
+                    MethodInfo mSetPage = typeof(MainForm).GetMethod("SetPage", BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo mPageOf = typeof(MainForm).GetMethod("PageOf", BindingFlags.NonPublic | BindingFlags.Instance);
+                    List<AppEntry> saved = big.Apps;
+                    try
+                    {
+                        mSetPage.Invoke(f, new object[] { big, 2 });          // 翻到第 3 页
+                        int at3 = (int)mPageOf.Invoke(f, new object[] { big });
+                        // 瘦身到只剩 2 个（1 页），再回涨回原样：残留的页码必须跟着收敛
+                        big.Apps = new List<AppEntry>();
+                        if (saved.Count > 0) big.Apps.Add(saved[0]);
+                        if (saved.Count > 1) big.Apps.Add(saved[1]);
+                        int afterShrink = (int)mPageOf.Invoke(f, new object[] { big });
+                        big.Apps = saved;
+                        int afterGrow = (int)mPageOf.Invoke(f, new object[] { big });
+                        Check(afterShrink == 0 && afterGrow == 0,
+                            "分组「瘦身再回涨」之后停在合理页（翻到第 3 页=" + at3 + " → 瘦身后=" + afterShrink
+                            + " → 回涨后=" + afterGrow + "，都应该是 0）—— 页码残留那次的回归测试");
+                    }
+                    finally { big.Apps = saved; }
+                }
+            }
+            catch (Exception exPg) { Check(false, "页码残留断言异常：" + exPg.Message); }
+
+            // ★★ 变体：「名字常驻显示」在小档位下不能把图标压到认不出
+            try
+            {
+                MethodInfo mLayout = typeof(MainForm).GetMethod("NameLabelLayout", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(mLayout != null, "「名字常驻」的留位算法是单独一个方法（探针能直接断言它）");
+                if (mLayout != null)
+                {
+                    Settings nmSet = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                    int nmGap = (int)Prop(f, "MiniGap");
+
+                    // ★三档各建一个同配置的窗体来问（MiniBox 取决于建窗时的 FolderScale），
+                    //   并钉死**每档该怎样**。上一版这条写成了
+                    //   `(drew && h>=X) || drew == false` —— 后半句**恒真**，于是「默认档 100 也不画名字」
+                    //   这个真回归它一点没抓到（独立复查用真窗体实测出来的）。现在三档分开查。
+                    // ★三档各建一个窗体来问，并钉死**每档该怎样**。上一版这条写成了
+                    //   `(drew && h>=X) || drew == false` —— 后半句**恒真**，于是「默认档 100 也不画名字」
+                    //   这个真回归它一点没抓到（独立复查用真窗体实测出来的）。现在三档分开查。
+                    // ★注意：新窗体是**从磁盘重新读配置**的，所以改内存里的 FolderScale 没用 ——
+                    //   必须把三份临时配置写到盘上（用同一个临时文件反复改），再拿它建窗。
+                    int oldScale = nmSet.FolderScale;
+                    bool sawDont = false, sawDefault = false, sawBig = false;
+                    StringBuilder nmLog = new StringBuilder();
+                    string tmpCfg = Path.Combine(Program.AppDir, "probe-namelabel.json");
+                    int[] scales = new int[] { 85, 100, 120 };
+                    for (int si = 0; si < scales.Length; si++)
+                    {
+                        int sc = scales[si];
+                        MainForm probe2 = null;
+                        try
+                        {
+                            nmSet.FolderScale = sc;
+                            ConfigStore.SaveSettingsResult(tmpCfg, nmSet);   // 落到临时文件（不碰用户配置）
+                            probe2 = new MainForm(tmpCfg);
+                            probe2.PreviewMode = true;
+                            probe2.ShowInTaskbar = false;
+                            probe2.StartPosition = FormStartPosition.Manual;
+                            probe2.Location = new Point(-4000, -1600);
+                            probe2.Show();
+                            Application.DoEvents();
+
+                            int box = (int)Prop(probe2, "MiniBox");
+                            int gap = (int)Prop(probe2, "MiniGap");
+                            int p2Tw = (int)Prop(probe2, "TileW");
+                            int p2Th = (int)Prop(probe2, "TileH");
+                            Rectangle cell = new Rectangle(0, 0, box, box);
+                            object[] a = new object[] { cell, gap, p2Tw, p2Th, 0, 0, Rectangle.Empty, Rectangle.Empty };
+                            bool drew = (bool)mLayout.Invoke(probe2, a);
+                            Rectangle inn = (Rectangle)a[6];
+                            nmLog.Append("      FolderScale=").Append(sc).Append("  格 ").Append(box).Append("px → ")
+                                 .Append(drew ? "画（图标区 " + inn.Height + "px）" : "不画").AppendLine();
+                            if (sc == 85 && !drew) sawDont = true;
+                            if (sc == 100 && drew) sawDefault = true;
+                            if (sc == 120 && drew) sawBig = true;
+                        }
+                        finally
+                        {
+                            if (probe2 != null) { try { probe2.Close(); probe2.Dispose(); } catch (Exception) { } }
+                        }
+                    }
+                    nmSet.FolderScale = oldScale;
+                    Say(nmLog.ToString().TrimEnd());
+                    Check(sawDont, "FolderScale 85（格子最小）：**不画**名字，把整格高度留给图标（不然图标只剩 14px 认不出）");
+                    Check(sawDefault, "★FolderScale 100（**默认档**）：名字照样画得出来 —— 这条是「默认档功能静默失效」那次的回归测试");
+                    Check(sawBig, "FolderScale 120：名字照样画得出来");
+
+                    // 格子足够大时必须照画（别把功能一刀砍掉）
+                    Rectangle nmBig = new Rectangle(0, 0, Theme.Px(f, 120), Theme.Px(f, 120));
+                    object[] nmArgs2 = new object[] { nmBig, nmGap, (int)Prop(f, "TileW"), (int)Prop(f, "TileH"), 0, 0, Rectangle.Empty, Rectangle.Empty };
+                    bool nmDrewBig = (bool)mLayout.Invoke(f, nmArgs2);
+                    Check(nmDrewBig, "格子够大时「名字常驻」照画（" + Theme.Px(f, 120) + "px 格子 → 画=" + nmDrewBig + "）");
+                }
+            }
+            catch (Exception exNm) { Check(false, "名字常驻留位断言异常：" + exNm.Message); }
 
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();

@@ -43,61 +43,65 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-
-            Color fore = Accent ? Theme.Accent : Theme.TextPrimary;
-            if (!Enabled) fore = Theme.TextDim;
-
-            if (Style == Look.Text || Style == Look.IconText)
+            try
             {
-                if (_hover || _down)
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+    
+                Color fore = Accent ? Theme.Accent : Theme.TextPrimary;
+                if (!Enabled) fore = Theme.TextDim;
+    
+                if (Style == Look.Text || Style == Look.IconText)
                 {
-                    Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-                    Theme.FillRound(g, r, Theme.Px(this, 6), _down ? Theme.HoverStrong : Theme.Surface);
+                    if (_hover || _down)
+                    {
+                        Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+                        Theme.FillRound(g, r, Theme.Px(this, 6), _down ? Theme.HoverStrong : Theme.Surface);
+                    }
+                }
+                else if (Style == Look.RoundIcon)
+                {
+                    if (_hover) Theme.FillRound(g, new Rectangle(0, 0, Width - 1, Height - 1), Theme.Px(this, 6), Theme.Surface);
+                }
+                else if (Style == Look.Link)
+                {
+                    if (_hover) fore = Color.FromArgb(255, 255, 255);
+                }
+    
+                string text = Text ?? string.Empty;
+                int pad = Theme.Px(this, Style == Look.Link ? 2 : 8);
+    
+                if (!string.IsNullOrEmpty(Glyph))
+                {
+                    // 字形盒子要按字形实际占宽来给：固定用 Height 当宽度时，MDL2 字形的步进宽度
+                    // 只要比它宽一点点，GDI 就会在图标后面再画一个「…」（用户看到的「设置/新建分组/关闭
+                    // 图标旁边都有点」就是这么来的 —— Theme.DrawText 强制 EndEllipsis 是罪魁）。
+                    Font glyphFont = Theme.Glyph(Height * 0.40f);
+                    Size gsz = TextRenderer.MeasureText(Glyph, glyphFont, new Size(int.MaxValue, Height), TextFormatFlags.NoPrefix);
+                    int minW = Theme.Px(this, 20);
+                    int glyphW = gsz.Width + Theme.Px(this, 4);
+                    if (glyphW < minW) glyphW = minW;
+                    int cap = Math.Max(minW, Width / 2);
+                    if (glyphW > cap) glyphW = cap;
+    
+                    Rectangle gr = new Rectangle(pad, 0, glyphW, Height);
+                    // 注意这里**不用** Theme.DrawText（它带 EndEllipsis）；字形只用 NoPrefix
+                    TextRenderer.DrawText(g, Glyph, glyphFont, gr, fore,
+                        TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    if (Style == Look.IconText && !string.IsNullOrEmpty(text))
+                    {
+                        Rectangle tr = new Rectangle(pad + glyphW, 0, Math.Max(1, Width - pad * 2 - glyphW), Height);
+                        Theme.DrawText(g, text, Font, tr, fore, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(text))
+                {
+                    Rectangle tr = new Rectangle(pad, 0, Math.Max(1, Width - pad * 2), Height);
+                    TextFormatFlags align = Style == Look.Link ? TextFormatFlags.Right : TextFormatFlags.Left;
+                    Theme.DrawText(g, text, Font, tr, fore, align | TextFormatFlags.VerticalCenter);
                 }
             }
-            else if (Style == Look.RoundIcon)
-            {
-                if (_hover) Theme.FillRound(g, new Rectangle(0, 0, Width - 1, Height - 1), Theme.Px(this, 6), Theme.Surface);
-            }
-            else if (Style == Look.Link)
-            {
-                if (_hover) fore = Color.FromArgb(255, 255, 255);
-            }
-
-            string text = Text ?? string.Empty;
-            int pad = Theme.Px(this, Style == Look.Link ? 2 : 8);
-
-            if (!string.IsNullOrEmpty(Glyph))
-            {
-                // 字形盒子要按字形实际占宽来给：固定用 Height 当宽度时，MDL2 字形的步进宽度
-                // 只要比它宽一点点，GDI 就会在图标后面再画一个「…」（用户看到的「设置/新建分组/关闭
-                // 图标旁边都有点」就是这么来的 —— Theme.DrawText 强制 EndEllipsis 是罪魁）。
-                Font glyphFont = Theme.Glyph(Height * 0.40f);
-                Size gsz = TextRenderer.MeasureText(Glyph, glyphFont, new Size(int.MaxValue, Height), TextFormatFlags.NoPrefix);
-                int minW = Theme.Px(this, 20);
-                int glyphW = gsz.Width + Theme.Px(this, 4);
-                if (glyphW < minW) glyphW = minW;
-                int cap = Math.Max(minW, Width / 2);
-                if (glyphW > cap) glyphW = cap;
-
-                Rectangle gr = new Rectangle(pad, 0, glyphW, Height);
-                // 注意这里**不用** Theme.DrawText（它带 EndEllipsis）；字形只用 NoPrefix
-                TextRenderer.DrawText(g, Glyph, glyphFont, gr, fore,
-                    TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-                if (Style == Look.IconText && !string.IsNullOrEmpty(text))
-                {
-                    Rectangle tr = new Rectangle(pad + glyphW, 0, Math.Max(1, Width - pad * 2 - glyphW), Height);
-                    Theme.DrawText(g, text, Font, tr, fore, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-                }
-            }
-            else if (!string.IsNullOrEmpty(text))
-            {
-                Rectangle tr = new Rectangle(pad, 0, Math.Max(1, Width - pad * 2), Height);
-                TextFormatFlags align = Style == Look.Link ? TextFormatFlags.Right : TextFormatFlags.Left;
-                Theme.DrawText(g, text, Font, tr, fore, align | TextFormatFlags.VerticalCenter);
-            }
+            catch (Exception ex) { Theme.PaintCatch(this, e, "底栏按钮", ex); }
         }
     }
 
@@ -296,6 +300,10 @@ namespace BreadLauncher
             if (disposing)
             {
                 try { _repaint.Stop(); _repaint.Dispose(); }
+                catch (Exception) { }
+                // ★_autoScroll 以前**从来不 Dispose**（只 Stop）：Timer 是 Component，
+                //   挂在控件的组件表上，谁都不会替它收 —— 每次建列表就多一个（Leak 一族）。
+                try { _autoScroll.Stop(); _autoScroll.Dispose(); }
                 catch (Exception) { }
             }
             base.Dispose(disposing);

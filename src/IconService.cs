@@ -1,13 +1,22 @@
 // IconService.cs —— 取应用图标（含 UWP），带内存缓存 + 磁盘缓存 + 后台加载
 //
-// 为什么不用 Icon.ExtractAssociatedIcon：
-//   UWP 应用根本没有独立 exe，AUMID 也不是文件，靠扩展名取图标必然是空白。
-// 所以走系统的 IShellItemImageFactory（资源管理器画图标就是用这个），
-// 拿不到再退回 SHGetFileInfo，最后兜底系统通用图标 —— 保证列表里永远不出现空洞。
-// 磁盘缓存放在软件自己的 cache\icons，不写 C 盘用户目录。
+// ★★这份文件头以前写的是**上一版**的策略，和现行代码**完全相反** —— 底下这段是照代码重写的
+//    （2026-09-27 核实）。照着旧注释去"修"代码，会把已经修好的「彩色雪花图 / 白纸图」bug 重新引回来。
+//
+// 实际的取图顺序（看 TryShellFileIcon 那一段）：
+//   ① 条目自带「真实图标来源」（.url 里的 IconFile、同名 .lnk）就用它；
+//   ② 否则先试 `Icon.ExtractAssociatedIcon`（对真实 exe 最省事）；
+//   ③ 认得成文件路径的，走系统的 `IShellItemImageFactory`（资源管理器画图标就是用它）；
+//   ④ UWP / 协议项没有独立 exe（AUMID 也不是文件），按 `shell:AppsFolder\<AUMID>` 取；
+//   ⑤ 再不行退回 `SHGetFileInfo`；
+//   ⑥ **到这里还不行就返回 null** —— 界面画「首字母色块」。**刻意不再拿系统那张「未知文件类型」
+//      的白纸图顶替**：那张白纸看着像出错，色块反而一眼认得出是哪个软件（而且会被判成"噪点"主动剔掉）。
+//   → 所以**列表里会出现色块，但不会出现白纸图**；这是设计，不是空洞。
 //
 // 为什么自己写工作线程：一次性给 200 个条目排队取图标，如果直接在 UI 线程取，
-// 面板会卡住好几秒。这里固定 3 条后台线程慢慢取，取到一个通知界面重画一次。
+// 面板会卡住好几秒。这里最多开 3 条后台线程（按需创建，不是一开始就 3 条）慢慢取，
+// 取到一个通知界面重画一次。
+// 磁盘缓存放在软件自己的 cache\icons，不写 C 盘用户目录。
 
 using System;
 using System.Collections.Generic;
@@ -313,7 +322,7 @@ namespace BreadLauncher
 
         /// <summary>
         /// 用「外部给的图标来源」取图：
-        ///   .ico 优先**自己解 PNG 压缩帧**（见 DecodeIcoPngFrame），退回到老的 Icon 构造函数；
+        ///   .ico 优先**自己解 PNG 压缩帧**（见 DecodeIcoFrame），退回到老的 Icon 构造函数；
         ///   其它（.exe / .lnk / .msc）先交给 shell —— .lnk 的图标只有 shell 解得对，最后再退回 ExtractAssociatedIcon。
         /// </summary>
         private static Bitmap TryIconSource(string path, int size)
@@ -343,8 +352,11 @@ namespace BreadLauncher
                     }
                     try
                     {
+                        // ★`ic.ToBitmap()` 会**新建**一张位图，`Normalize` 只把它画进新图、**不接管**它 ——
+                        //   所以必须自己释放，否则每走一次这条路就漏一张（子智能体审计发现，已复验）。
                         using (Icon ic = new Icon(path, size, size))
-                            return Normalize(ic.ToBitmap(), size);
+                        using (Bitmap tb = ic.ToBitmap())
+                            return Normalize(tb, size);
                     }
                     catch { }
                 }
@@ -356,7 +368,9 @@ namespace BreadLauncher
                 if (bmp != null && LooksGeneric(bmp, size) == false) return bmp;
                 using (Icon ic = Icon.ExtractAssociatedIcon(path))
                 {
-                    if (ic != null) return Normalize(ic.ToBitmap(), size);
+                    if (ic != null)
+                        using (Bitmap tb = ic.ToBitmap())      // ★同上：ToBitmap 是新建的，得自己释放
+                            return Normalize(tb, size);
                 }
             }
             catch (Exception ex)
@@ -442,15 +456,15 @@ namespace BreadLauncher
             }
         }
 
+        /// <summary>参照图只缓存**像素数组**（int[]），不缓存 Bitmap —— 见 GenericReference 的说明。</summary>
+        private static readonly Dictionary<int, int[]> _genericRef = new Dictionary<int, int[]>();
+        private static readonly object _genericLock = new object();
+
         /// <summary>
         /// 系统「未知文件类型」那张通用白纸图标（按尺寸懒加载的参照图）。
         /// 做法是**建一个未知扩展名的空文件**再问 `Icon.ExtractAssociatedIcon`（句柄是自己的，随便释放）；
         /// ★不要改用 `SHGetFileInfo` + `DestroyIcon` —— 那是系统共享句柄，销毁会弄坏系统图标缓存（见 §11.27）。
         /// </summary>
-        /// <summary>参照图只缓存**像素数组**（int[]），不缓存 Bitmap —— 见 GenericReference 的说明。</summary>
-        private static readonly Dictionary<int, int[]> _genericRef = new Dictionary<int, int[]>();
-        private static readonly object _genericLock = new object();
-
         private static int[] GenericReference(int size)
         {
             lock (_genericLock)
@@ -473,10 +487,11 @@ namespace BreadLauncher
                     if (!Directory.Exists(_probeDir)) Directory.CreateDirectory(_probeDir);
                     if (!File.Exists(probe)) File.WriteAllText(probe, string.Empty);
                     using (Icon ic = Icon.ExtractAssociatedIcon(probe))
+                    using (Bitmap mid = ic == null ? null : ic.ToBitmap())   // ★中间位图要自己释放
                     {
                         if (ic != null)
                         {
-                            using (Bitmap b = Normalize(ic.ToBitmap(), size))
+                            using (Bitmap b = Normalize(mid, size))
                             {
                                 if (b != null && b.Width == size && b.Height == size)
                                 {
@@ -642,7 +657,9 @@ namespace BreadLauncher
             {
                 using (Icon own = Icon.ExtractAssociatedIcon(path))
                 {
-                    if (own != null) return Normalize(own.ToBitmap(), size);
+                    if (own != null)
+                        using (Bitmap tb = own.ToBitmap())     // ★同上：ToBitmap 是新建的，得自己释放
+                            return Normalize(tb, size);
                 }
             }
             catch { }

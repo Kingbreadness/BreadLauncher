@@ -107,8 +107,21 @@ namespace BreadLauncher
         /// <summary>最近一次「读文件失败」的原因（UI 拿它提醒用户一次）。读成功后自动清空。</summary>
         public static string LastReadError;
 
-        /// <summary>最近一次「写文件失败」的原因（连成功一次就清空）。**「关于」窗口拿它给用户看**。</summary>
+        /// <summary>最近一次「写文件失败」的原因（连成功一次就清空）。</summary>
         public static string LastWriteError;
+
+        /// <summary>
+        /// **配置文件**专用的写失败原因 —— 「关于」窗口显示的就是它。
+        /// ★为什么不共用上面那个 `LastWriteError`：那是全局单值，**任何文件写成功都会把它清空**，
+        ///   而 `apps-cache.json` 的写在**后台线程**、随时可能成功 —— 于是「分组那次真失败过」
+        ///   会被一次缓存写成功抹掉证据，「关于」显示成「配置保存：正常。」。
+        ///   （独立复查实测：写坏路径 → Failed 有原因 → 另写一个好文件成功 → 原因变 null。）
+        ///   这个字段**只有配置文件的写入结果会改它**，所以不会被别的文件顶掉。
+        /// </summary>
+        public static string LastSettingsWriteError;
+
+        /// <summary>被禁写的文件集合的读写锁（Read 在 UI 线程、SaveCache 在后台线程，两边都要动它）。</summary>
+        private static readonly object BlockedLock = new object();
 
         /// <summary>
         /// 被禁写的文件（逐文件、不跨文件）。
@@ -136,7 +149,7 @@ namespace BreadLauncher
                 ser.MaxJsonLength = 64 * 1024 * 1024;
                 T obj = ser.Deserialize<T>(text);
                 LastReadError = null;
-                BlockedWrites.Remove(Norm(file));     // 能读通 = 这个文件的写入限制解除
+                lock (BlockedLock) BlockedWrites.Remove(Norm(file));   // 能读通 = 这个文件的写入限制解除
                 return obj == null ? fallback : obj;
             }
             catch (Exception ex)
@@ -144,7 +157,7 @@ namespace BreadLauncher
                 // 配置坏了不能让软件打不开：先尽力把原文留一份备份，再用默认值继续。
                 LastReadError = file + "：" + ex.GetType().Name + " " + ex.Message;
                 Log(Program.AppDir, "读文件失败 " + LastReadError);
-                if (BackupBad(file) == false) BlockedWrites.Add(Norm(file));
+                if (BackupBad(file) == false) lock (BlockedLock) BlockedWrites.Add(Norm(file));
                 return fallback;
             }
         }
@@ -201,7 +214,9 @@ namespace BreadLauncher
         /// </summary>
         public static SaveResult Write(string file, object o)
         {
-            if (BlockedWrites.Contains(Norm(file)))
+            bool blocked;
+            lock (BlockedLock) blocked = BlockedWrites.Contains(Norm(file));
+            if (blocked)
             {
                 LastWriteError = file + "：该文件此前读失败且备份不出去，已暂停写入（避免覆盖掉唯一那份数据）";
                 return SaveResult.Failed;
@@ -403,7 +418,11 @@ namespace BreadLauncher
         {
             if (s == null) return SaveResult.Failed;
             Normalize(s);
-            return Write(file, s);
+            SaveResult r = Write(file, s);
+            // ★配置文件专用记录：只有「写配置文件」的结果会改它 —— 后台线程写 apps-cache.json
+            //   成功不会把这条证据抹掉（那就是「关于」误报「正常」的原因）。
+            LastSettingsWriteError = (r == SaveResult.Failed) ? LastWriteError : null;
+            return r;
         }
 
         // ---------------- 应用列表缓存 ----------------
@@ -430,6 +449,12 @@ namespace BreadLauncher
 
         private static readonly object LogLock = new object();
 
+        /// <summary>日志轮转阈值：超过它就整份挪成 log.1.txt，重新开一份。留 2 份 = 最多约 2×。</summary>
+        private const long LogMaxBytes = 1024 * 1024;      // 1 MB
+
+        /// <summary>上次检查日志大小的时间（每次写都查一遍 FileInfo 太浪费，节流到 1 分钟一次）。</summary>
+        private static DateTime _logSizeCheckedAt = DateTime.MinValue;
+
         public static void Log(string appDir, string msg)
         {
             try
@@ -437,8 +462,31 @@ namespace BreadLauncher
                 lock (LogLock)
                 {
                     Directory.CreateDirectory(Path.Combine(appDir, "cache"));
+                    string file = LogFile(appDir);
+
+                    // ★轮转：原来是无条件追加、**从不清理**，两天就 400KB+，跑久了只会越来越大
+                    //   （用户装完就不管的那种用法，一年下来能到几十 MB）。
+                    //   检查节流到 1 分钟一次 —— 这条只在锁里做一次 FileInfo，几乎不要钱。
+                    try
+                    {
+                        if ((DateTime.UtcNow - _logSizeCheckedAt).TotalSeconds >= 60)
+                        {
+                            _logSizeCheckedAt = DateTime.UtcNow;
+                            FileInfo fi = new FileInfo(file);
+                            if (fi.Exists && fi.Length > LogMaxBytes)
+                            {
+                                string old = Path.Combine(Path.GetDirectoryName(file), "log.1.txt");
+                                try { if (File.Exists(old)) File.Delete(old); }
+                                catch (Exception) { }
+                                try { File.Move(file, old); }
+                                catch (Exception) { }
+                            }
+                        }
+                    }
+                    catch (Exception) { }
+
                     string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + msg + Environment.NewLine;
-                    File.AppendAllText(LogFile(appDir), line, new UTF8Encoding(false));
+                    File.AppendAllText(file, line, new UTF8Encoding(false));
                 }
             }
             catch { }

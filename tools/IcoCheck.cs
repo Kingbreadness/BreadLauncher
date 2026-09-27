@@ -2,8 +2,8 @@
 //
 // 什么时候用它：用户说「某个图标不对」（彩色雪花 / 空白 / 糊）时，拿那个 .ico 跑一遍，
 // 一次看清「每一帧是什么格式」以及「各种取法分别得到什么」：
-//   · new Icon(path, s, s).ToBitmap()  ← 老写法：**PNG 压缩帧**会被 GDI+ 读成彩色噪点，大尺寸还会抛异常
-//   · 按 PNG 解帧再缩放              ← 现在的正确写法（IconService.DecodeIcoFrame）
+//   · new Icon(path, s, s).ToBitmap()  ← 仍在用的**兜底**（不是老写法）：主程序取 .ico 时先自己解 PNG 帧、失败才退到它；它碰上 **PNG 压缩帧**会被 GDI+ 读成彩色噪点，大尺寸还会抛异常
+//   · 按 PNG 解帧再缩放              ← 主程序取 .ico 时**先走**这条，解不出来才退回上一条（IconService.DecodeIcoFrame）
 // 输出里的「噪声分」= 相邻像素差得离谱的比例：真图标 ≤0.67，被错读的 PNG 帧 0.92~0.99。
 //
 // 编译（只用系统 csc，不依赖 src）：
@@ -58,7 +58,7 @@ class IcoChk
             }
         }
 
-        // 3) new Icon(path, s, s) —— 程序现在用的方式，逐个尺寸存图看
+        // 3) new Icon(path, s, s) —— 主程序仍在用的**兜底**方式（PNG 帧解不出来、或选中的是老式 DIB 帧时才走它），逐个尺寸存图看
         int[] sizes = new int[] { 16, 24, 32, 36, 48, 64, 96, 128, 256 };
         for (int i = 0; i < sizes.Length; i++)
         {

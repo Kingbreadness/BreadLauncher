@@ -61,7 +61,9 @@ class IconProbe
             using (Icon ic = new Icon(path, size, size)) { using (Bitmap b = ic.ToBitmap()) { Report("2-newIcon", b, size, true); } }
         } catch (Exception ex) { Console.WriteLine("2-newIcon EX " + ex.Message); }
 
-        // 3) ShellItemImageFactory -> Image.FromHbitmap  (当前代码路径)
+        // 3) ShellItemImageFactory -> Image.FromHbitmap  (已降级为**兜底**：仅「老式无 alpha 位图」才走它 ——
+        //    Image.FromHbitmap 会把 alpha 通道扔掉，原本透明的地方变成不透明的纯黑)
+        // 4) ShellItemImageFactory -> FromHbitmapKeepAlpha  (当前代码路径，见 IconService.FromHbitmapKeepAlpha)
         IntPtr hbm = IntPtr.Zero;
         try {
             Guid iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");

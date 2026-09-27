@@ -12,17 +12,17 @@ BreadLauncher\
 ├─ src\                   全部源码（见下表）
 ├─ tools\                 开发 / 自检工具（5 个 .cs，不随成品发布）
 │   ├─ MakeIcon.cs        图标生成器（生成 assets\BreadLauncher.ico；配色也在这里改）
-│   ├─ ClickProbe.cs      自检探针（60+ 条断言：分页、命中、框选、拖排序、滚动条、右键菜单、来源筛选、显示名、鼠标穿透…）→ build\clickprobe.exe
+│   ├─ ClickProbe.cs      自检探针（源码里 111 处 `Check(...)` 调用点，跑一份配置实际执行 42~87 条：分页、命中、框选、拖排序、滚动条、右键菜单、来源筛选、显示名、鼠标穿透…）→ build\clickprobe.exe
 │   ├─ AppsProbe.cs       按名字打印 AppsFolder 条目的 ExtendedProperty（查 TargetParsingPath 用）
 │   ├─ IconProbe.cs       取图标探针（对比各种取图方式）
 │   └─ IcoCheck.cs        拆开 .ico 的每帧 + 各取法的「噪声分」（查彩色乱码图标用）
-├─ build\                 编译产物 + 数据（**不随仓库发布**，只有 5 个自检配置随仓库走）
+├─ build\                 编译产物 + 数据（**不随仓库发布**，只有 6 个自检配置随仓库走）
 │   ├─ BreadLauncher.exe  成品
 │   ├─ clickprobe.exe     开发探针（可选）
 │   ├─ settings.json      你的分组配置
 │   ├─ verify\            独立验收留下的复现报告与原始证据（本机生成、不随仓库发布）
 │   └─ cache\             图标、应用列表缓存、日志
-├─ README.md              本文件
+├─ README.md              用户向文档：怎么用、怎么编译、已知限制（这份目录说明在 docs\layout.md）
 ├─ AGENTS.md              给下一个接手的人 / AI 的工作约定
 ├─ 交接文档.md            内部交接与验收记录（含个人路径，**不随仓库发布**）
 ├─ .gitignore             挡住用户数据（settings / 缓存 / 本机测试配置）、构建产物和一次性证据
@@ -31,7 +31,7 @@ BreadLauncher\
 
 `build\` 里还会散着一些自检 / 探针留下的临时文件（`scan.txt`、`preview-*.png`、`clickprobe-report.txt` 之类），可以随手删；但 `build\verify\` 是独立验收留下的原始证据（复现报告 + 各次运行的输出字节），**先别删**。
 
-⚠ **要把这个项目发给别人 / 开源的话**：`build\test-settings-groups.json`（还有 `build\tmp.json`）里存的是**你自己桌面上真实应用的路径 / `steam://` 链接**，别带出去；给外人复现用的通用配置是 `build\test-settings-scroll.json`（13 个空组）。仓库里的 `.gitignore` 已经把这些连同 `build\settings*.json`、`build\*.png` 一起挡住了，照着它挑要带的东西就不会漏。
+⚠ **要把这个项目发给别人 / 开源的话**：`build\test-settings-*.json` 这 6 份是**故意放行进仓库**的（`.gitignore` 末尾的 `!build/test-settings-*.json`），已经脱敏（本机复核：6 份里盘符路径 0 条、`steam://` 0 条）；本机临时配置是 `build\tmp.json`，别带出去。仓库里的 `.gitignore` 已经挡住了 `build\settings*.json`、`build\cache\`、`build\verify\`、`build\*.png` 这些含个人数据或一次性证据的东西，照着它挑要带的东西就不会漏。
 
 `src\` 里各文件的分工：
 

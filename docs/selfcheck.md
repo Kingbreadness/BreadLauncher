@@ -13,17 +13,18 @@ build\BreadLauncher.exe --launch 名称                直接走启动链路（�
 build\BreadLauncher.exe --icontest 名称              把某个应用的图标导出到 build\icontest\（含清缓存强制重取）
 build\BreadLauncher.exe --icons                     列出补到「真实图标来源」的条目
 build\BreadLauncher.exe --dupicons                  按图标像素哈希找重复图标（看「通用空白图标」清干净没有）
+build\BreadLauncher.exe --previewscan 图.png        离屏渲染「管理自定义文件夹」窗口（排版改动要看图；它没有按钮点击用例）
 ```
 
 > 本机实测：桌面快捷方式补齐之后，`--scan` 报 **175** 条，其中 **88** 条在桌面上有快捷方式 —— 79 条是本来就扫到的同名条目（打「桌面」标记），9 条是只存在于桌面、按快捷方式本身新建的条目，**和桌面上实际的 88 个快捷方式完全对齐**（个人桌面 59 个 + 公共桌面 29 个）。数字随机器上装的软件而变。
 
 这些模式都**不弹可见的面板**（预览窗口建在屏幕外的 `-4000,-2000`），**唯一保证绝对不动的是 `settings.json`**（你的分组数据不会被改；唯一例外是它本来就已读坏时会被备份成 `settings.json.bad`，原文件依然不动）。其余副作用是真实存在的，跑之前心里有数：
 
-- `--scan` / `--launch` / `--icons` 都会真扫一遍应用，每次往 `build\cache\log.txt` 追加两行（「图标来源补全」+「扫描完成」）。
+- `--scan` / `--launch` / `--icons` / `--dupicons` 都会真扫一遍应用，每次往 `build\cache\log.txt` 追加**三行**（「图标来源补全」+「桌面快捷方式：标记已有 N 条、新增 M 条」+「扫描 shell:AppsFolder 完成」）。
 - `--dupicons` 除了扫一遍写日志，还会**对每个条目取一张 32px 图标并落盘**到 `build\cache\icons\`。
 - `--preview` / `--previewall` 会**真的创建一个屏幕外窗口**（布局、取图标全跑一遍），所以会把取到的图标 PNG 写进 `build\cache\icons\`。写日志**不是无条件的**：只有真的触发扫描（没有可用缓存，或缓存超过 12 小时触发后台刷新）或取图失败时才写 `build\cache\log.txt`；缓存新鲜、图标齐全时预览不写日志。
-- `apps-cache.json` **`--preview` 和 `--previewall` 都不写**：两处 `ConfigStore.SaveCache(...)` 调用点都在 `MainForm.cs:1479`、`MainForm.cs:1506`，**两条都被 `PreviewMode == false` 挡住**（2026-09-27 实测：预览前后 `apps-cache.json` 哈希不变）。
-  ★这条原来写反了（说"`--preview` 没有可用缓存时必写"）——**照那句去删守卫就会把历史事故招回来**（探针/预览把临时目录的条目写进用户真实缓存，见 `MainForm.cs:1476` 的注释）。
+- `apps-cache.json` **`--preview` 和 `--previewall` 都不写**：两处 `ConfigStore.SaveCache(...)` 调用点分别在 `MainForm.LoadData` 和 `MainForm.StartBackgroundRefresh` 里，**两条都被 `PreviewMode == false` 挡住**（`--preview` 在 `Show()` 之前就置了 `PreviewMode = true`，而 `LoadData` 是在 `OnLoad` 里才调的，正好走守卫）。2026-09-27 实测：预览 / 预览全部跑完，`apps-cache.json` 的哈希和 mtime 都不变。
+  ★这条原来写反了（说"`--preview` 没有可用缓存时必写"）——**照那句去删守卫就会把历史事故招回来**（探针/预览把临时目录的条目写进用户真实缓存，`MainForm.LoadData` 里的注释写着这件事）。
   `--previewall` 只读缓存或现扫一遍，同样不落盘。
 - `--icontest` **会先清掉图标缓存再强制重取**：`IconService.ClearDiskCache()` 会清内存缓存 + 删掉 `build\cache\icons\` 目录下的所有 `*.png`（目录本身保留）—— 想保住图标缓存就别跑它。
 - `--launch` 会真的启动应用，别拿它试你不认识的名字。
@@ -66,4 +67,4 @@ build\clickprobe.exe [settings.json] [组序号]
 看到 `（跳过：…）` 就等于那一条**没有被验证**。
 ★特别注意两条容易「静默跳过」的关键断言：**「跟手 1:1：鼠标走 100px 面板走 100px」**（拖动/搬面板那一段，
 以前因为坐标在性能测试改宽度之前取好而恒跳过 → 2026-09-27 已修）和**「被下沿切掉的格子不能再命中」**
-（只有 `test-settings-10groups.json` 会真的跑）。这两条必须亲眼看到 `[PASS]`。
+（`test-settings-10groups.json` / `test-settings-36groups.json` / `test-settings-scroll.json` 都会真的跑：实测分别切掉 1 / 16 / 5 个格子）。这两条必须亲眼看到 `[PASS]`。

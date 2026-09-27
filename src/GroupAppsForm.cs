@@ -281,7 +281,7 @@ namespace BreadLauncher
             _group.Keys = keys;
 
             _apps = order;
-            if (_changed != null) { try { _changed(); } catch (Exception) { } }   // 调用方落盘 + 刷新面板
+            if (_changed != null) { try { _changed(); } catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "「查看全部」的改动落盘回调抛异常（界面显示改好了，其实可能没写进去）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } } }   // 调用方落盘 + 刷新面板
             Rebuild();
         }
 
@@ -306,7 +306,8 @@ namespace BreadLauncher
             if (_changed != null)
             {
                 try { _changed(); }
-                catch (Exception) { }
+                // ★同上：回调里是「把改动写进配置」。异常被吞掉 = 界面说改好了、磁盘上没有、日志里也没线索。
+                catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "「查看全部」的改动落盘回调抛异常（界面显示改好了，其实可能没写进去）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } }
             }
             ApplyLayout();
             Rebuild();
@@ -316,7 +317,7 @@ namespace BreadLauncher
         private void SetLabel(AppEntry en, bool on)
         {
             AppNames.SetLabel(_settings, en, on);
-            if (_changed != null) { try { _changed(); } catch (Exception) { } }
+            if (_changed != null) { try { _changed(); } catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "「查看全部」的改动落盘回调抛异常（界面显示改好了，其实可能没写进去）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } } }
             Rebuild();
         }
 
@@ -324,7 +325,7 @@ namespace BreadLauncher
         private void SetName(AppEntry en, string name)
         {
             AppNames.Set(_settings, en, name);
-            if (_changed != null) { try { _changed(); } catch (Exception) { } }
+            if (_changed != null) { try { _changed(); } catch (Exception ex) { try { ConfigStore.Log(Program.AppDir, "「查看全部」的改动落盘回调抛异常（界面显示改好了，其实可能没写进去）：" + ex.GetType().Name + " " + ex.Message); } catch (Exception) { } } }
             Rebuild();
         }
 
@@ -376,20 +377,24 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush b = new SolidBrush(Theme.BgBottom))
-                g.FillRectangle(b, ClientRectangle);
-
-            Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold), _headRect, Theme.TextPrimary,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-
-            Theme.DrawText(g, _hint, Theme.Ui(9f),
-                new Rectangle(_headRect.X, _close.Top, Math.Max(Theme.Px(this, 40), _close.Left - _headRect.X - Theme.Px(this, 12)), _close.Height),
-                Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-
-            using (Pen p = new Pen(Theme.Border))
-                g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            try
+            {
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush b = new SolidBrush(Theme.BgBottom))
+                    g.FillRectangle(b, ClientRectangle);
+    
+                Theme.DrawText(g, _title, Theme.Ui(11f, FontStyle.Bold), _headRect, Theme.TextPrimary,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+    
+                Theme.DrawText(g, _hint, Theme.Ui(9f),
+                    new Rectangle(_headRect.X, _close.Top, Math.Max(Theme.Px(this, 40), _close.Left - _headRect.X - Theme.Px(this, 12)), _close.Height),
+                    Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+    
+                using (Pen p = new Pen(Theme.Border))
+                    g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+            }
+            catch (Exception ex) { Theme.PaintCatch(this, e, "查看全部窗口", ex); }
         }
     }
 }
