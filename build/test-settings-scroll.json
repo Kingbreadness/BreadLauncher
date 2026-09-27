@@ -1,0 +1,24 @@
+{
+  "Pinned": [],
+  "Groups": [
+    { "Name": "组一", "Keys": [] },
+    { "Name": "组二", "Keys": [] },
+    { "Name": "组三", "Keys": [] },
+    { "Name": "组四", "Keys": [] },
+    { "Name": "组五", "Keys": [] },
+    { "Name": "组六", "Keys": [] },
+    { "Name": "组七", "Keys": [] },
+    { "Name": "组八", "Keys": [] },
+    { "Name": "组九", "Keys": [] },
+    { "Name": "组十", "Keys": [] },
+    { "Name": "组十一", "Keys": [] },
+    { "Name": "组十二", "Keys": [] },
+    { "Name": "组十三", "Keys": [] }
+  ],
+  "FirstSeen": {},
+  "GridMode": false,
+  "Acrylic": false,
+  "Seeded": true,
+  "PanelW": 640,
+  "PanelH": 400
+}

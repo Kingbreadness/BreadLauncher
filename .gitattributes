@@ -1,0 +1,10 @@
+# 统一换行：这个项目只在 Windows 上编译/运行（csc.exe + WinForms）
+* text=auto eol=crlf
+
+# 二进制文件别做换行转换（否则图标/截图会被改坏）
+*.png binary
+*.ico binary
+*.exe binary
+
+# 让 GitHub 的语言统计别把文档算进去
+*.md linguist-documentation

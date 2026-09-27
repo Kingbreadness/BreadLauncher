@@ -1,0 +1,76 @@
+# ---- 不要提交的东西（个人数据 / 构建产物 / 一次性证据）----
+# 用户数据（每个人自己的分组、图标缓存、日志）
+build/settings.json
+build/settings.json.prev
+build/settings.json.bad
+build/settings.json.*.tmp
+build/settings.json.old
+build/settings*.json
+build/cache/
+build/icontest/
+
+# 自检用的配置**都随仓库发布**（都已脱敏：键是 Windows 自带应用 + 合成键 demo.app.NN，
+# 没有任何个人路径/steam 链接）：
+#   test-settings-groups.json  规范配置（3 组 18 键，探针主用例跑这个）
+#   test-settings-10apps.json  1 组正好 10 个（测组内分页）
+#   test-settings-9apps.json   1 组正好 9 个（正好一页的边界）
+#   test-settings-36groups.json 36 组（测面板滚动）
+#   test-settings-scroll.json  13 个空组（测滚动/空态）
+build/tmp.json
+build/tmp-run.json
+
+# 构建产物（用 编译-零安装.cmd 或 README 里的 csc 命令现场生成）
+build/*.exe
+build/*.pdb
+
+# 测试 / 验证留下的一次性文件
+build/smoke/
+build/robust/
+build/verify/
+build/probe*/
+build/tools/
+build/*.png
+build/preview*.png
+build/scale-*.png
+build/panel-*.png
+build/after-restore.png
+build/real-*.png
+build/crops/
+build/*.txt
+build/swap-*.ps1
+build/swap-log.txt
+
+# 内部交接文档（含个人路径和排查记录，别开源）
+交接文档.md
+
+# 给 codex 用的临时提示词
+.codex-prompt-*.txt
+.codex-last.txt
+
+# 通用
+*.user
+*.suo
+.vs/
+bin/
+obj/
+Thumbs.db
+desktop.ini
+# 开发工具的编译产物（.cs 源码留着，exe 现场编）
+tools/*.exe
+
+# 根目录被误建的图标缓存（真正的缓存在 build/cache）
+/cache/
+
+# 其它内部交接文档（同上：含个人路径与排查记录）
+明天继续.md
+新窗口交接.md
+
+# ---- build/ 是"跑起来才生成"的工作区：默认**全部忽略**，只放行要随仓库走的文件 ----
+# （以前一条条列，结果几百个 *.err / 旧实验目录漏进了暂存区；开源前必须挡住）
+build/*
+!build/test-settings-groups.json
+!build/test-settings-10apps.json
+!build/test-settings-9apps.json
+!build/test-settings-36groups.json
+!build/test-settings-scroll.json
+!build/cliptest.cs
