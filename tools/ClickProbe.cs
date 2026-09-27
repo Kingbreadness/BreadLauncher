@@ -1601,6 +1601,139 @@ namespace BreadLauncher
             }
             catch (Exception exSeam) { Check(false, "裁剪缝断言异常：" + exSeam.Message); }
 
+            // ★★ 变体：分组被**全删光**之后，「常用」组不能自己复活
+            //   （ConfigStore.Normalize 的 Pinned 迁移必须带 `Seeded == false` 守卫；
+            //    Pinned 全工程没有任何地方会清空它，不加守卫 = 用户永远清不空分组）
+            try
+            {
+                Settings sm = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                // 前提：内存里此刻有分组，才动得了「清空」这个场景；否则这份配置测不了
+                if (sm == null || sm.Groups == null || sm.Groups.Count == 0)
+                {
+                    Say("（跳过：这份配置一开始就没有分组，测不了「删光之后会不会复活」）");
+                    NoteSkip("变体：配置本身没有分组，测不了「全删光后复活」");
+                }
+                else
+                {
+                    List<AppGroup> groupsBack = sm.Groups;
+                    List<string> pinnedBack = sm.Pinned;
+                    bool seededBack = sm.Seeded;
+                    try
+                    {
+                        sm.Pinned = new List<string>();
+                        sm.Pinned.Add("microsoft.windows.explorer");
+                        sm.Pinned.Add("microsoft.windowscalculator_8wekyb3d8bbwe!app");
+                        sm.Seeded = true;
+                        sm.Groups = new List<AppGroup>();
+                        ConfigStore.Normalize(sm);      // 读和写都会走这一遍：全删光的那一刻就是这里
+                        Check(sm.Groups.Count == 0,
+                            "把分组全删光之后没有组自己冒出来（写入路径 Normalize：Groups=" + sm.Groups.Count
+                            + "；Pinned 里还留着 " + sm.Pinned.Count + " 条旧固定项。这条是「删一次回来一次」那次的回归测试）");
+
+                        // 反向：老配置（没有 Seeded 这个键 → false）的升级迁移必须照做，别被守卫误伤
+                        Settings old2 = new Settings();
+                        old2.Seeded = false;
+                        old2.Pinned = new List<string>();
+                        old2.Pinned.Add("microsoft.windows.explorer");
+                        old2.Groups = new List<AppGroup>();
+                        ConfigStore.Normalize(old2);
+                        Check(old2.Groups.Count == 1 && old2.Groups[0].Keys.Count == 1,
+                            "老配置（没有 Seeded 键 → false）仍然照常迁移出「常用」组（组数=" + old2.Groups.Count
+                            + "，组内=" + (old2.Groups.Count > 0 ? old2.Groups[0].Keys.Count : 0) + "）—— 守卫没误伤升级路径");
+
+                        // 读到的那份也不该复活（Normalize 在 Load 里也会跑）
+                        List<AppGroup> none = new List<AppGroup>();
+                        Settings read2 = new Settings();
+                        read2.Seeded = true;
+                        read2.Pinned = new List<string>();
+                        read2.Pinned.Add("microsoft.windows.explorer");
+                        read2.Groups = none;
+                        ConfigStore.Normalize(read2);
+                        Check(read2.Groups.Count == 0, "读取路径同样不复活（Groups=" + read2.Groups.Count + "）");
+                    }
+                    finally
+                    {
+                        sm.Groups = groupsBack;
+                        sm.Pinned = pinnedBack;
+                        sm.Seeded = seededBack;
+                        f.Invalidate();
+                    }
+                }
+            }
+            catch (Exception exPin) { Check(false, "「常用」组复活断言异常：" + exPin.Message); }
+
+            // ★★ 变体：图标缓存里那个 null（「这张取不到」）不能盖住后来真取到的图
+            //   （IconService.Get 第二轮竞争：null 是合法缓存值，但不该让好图被 Dispose 掉）
+            try
+            {
+                IconService svc = (IconService)typeof(MainForm).GetField("_icons", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                List<AppEntry> icoAll = (List<AppEntry>)Field(f, "_all");
+                if (svc == null || icoAll == null || icoAll.Count == 0)
+                {
+                    Say("（跳过：这份配置里没有可用的应用条目，测不了图标缓存竞争）");
+                    NoteSkip("变体：没有可用的应用条目，测不了图标缓存竞争");
+                }
+                else
+                {
+                    // ★前提：必须挑一个**磁盘缓存真的存在**的条目。
+                    //   随手拿第一条（例如 steam:// 那种）它本来就取不到图 → Get 老老实实返回 null，
+                    //   那条 null 是**正确契约**、不是被顶掉的好图，测它等于测了个假前提（第一版这里就写错了）。
+                    System.Reflection.MethodInfo fileNameM = typeof(IconService).GetMethod("FileName", BindingFlags.NonPublic | BindingFlags.Static);
+                    string iconDir = (string)typeof(IconService).GetField("_iconDir", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(svc);
+                    AppEntry ie = null;
+                    Bitmap first = null;
+                    string png = null;
+                    for (int i = 0; i < icoAll.Count; i++)
+                    {
+                        Bitmap got;
+                        try { got = svc.Get(icoAll[i], 32); }
+                        catch { continue; }
+                        if (got == null) continue;
+                        string f2 = Path.Combine(iconDir, (string)fileNameM.Invoke(null, new object[] { icoAll[i], 32 }));   // ★FileName 是静态方法
+                        if (File.Exists(f2) == false) continue;    // 只能来自内存，Inject 之后测不出"恢复"
+                        ie = icoAll[i]; first = got; png = f2;
+                        break;
+                    }
+                    if (ie == null)
+                    {
+                        Say("（跳过：这份配置里没有一个「磁盘上真有缓存 PNG」的条目 —— 挑出能复现竞争的前提不成立）");
+                        NoteSkip("变体：没有带磁盘缓存的条目，测不了图标缓存竞争（第一版就是拿了个取不到图的条目，假前提）");
+                    }
+                    else
+                    {
+                        System.Reflection.FieldInfo memF = typeof(IconService).GetField("_mem", BindingFlags.NonPublic | BindingFlags.Instance);
+                        System.Collections.IDictionary mem = (System.Collections.IDictionary)memF.GetValue(svc);
+                        string ck = null;
+                        foreach (System.Collections.DictionaryEntry de in mem)
+                            if (object.ReferenceEquals(de.Value, first)) { ck = (string)de.Key; break; }
+                        if (ck == null)
+                        {
+                            Say("（跳过：内存缓存里没找到刚取的那张图的键）");
+                            NoteSkip("变体：内存缓存里找不到键");
+                        }
+                        else
+                        {
+                            // 先记下磁盘那张 PNG 的指纹：如果它**没变**，就说明下面这次走的是
+                            // 「读回内存/磁盘已有那张」，而不是重新抽一张图再覆盖上去。
+                            long pngLen0 = new FileInfo(png).Length;
+                            string pngHash0 = Sha256File(png);
+                            mem[ck] = null;                    // 模拟「另一个线程先失败，把 null 存了进来」
+                            Bitmap again = svc.Get(ie, 32);
+                            Check(again != null,
+                                "缓存里已有那个 null（「这张取不到」）时，再取一次仍然拿得到真图"
+                                + "（返回 " + (again == null ? "null ❌ = 好图被 null 顶掉了" : "真图 ✅") + "）");
+                            Check(object.ReferenceEquals(mem[ck], null) == false && mem[ck] != null,
+                                "缓存里那个 null 被真图覆盖掉了（不是一直留着一张「取不到」的标记）");
+                            Check(object.ReferenceEquals(mem[ck], again),
+                                "返回的就是缓存里那一张（不是又做了一张、然后漏一张 GDI 位图）");
+                            Check(again == null || (Sha256File(png) == pngHash0 && new FileInfo(png).Length == pngLen0),
+                                "磁盘上那张 PNG 没被重写（证明走的是「拿回已有那张」这条路，不是重新抽图）");
+                        }
+                    }
+                }
+            }
+            catch (Exception exIco) { Check(false, "图标缓存竞争断言异常：" + exIco.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
@@ -1811,6 +1944,23 @@ namespace BreadLauncher
         {
             PropertyInfo p = o.GetType().GetProperty(name, BindingFlags.NonPublic | BindingFlags.Instance);
             return p.GetValue(o, null);
+        }
+
+        /// <summary>文件的 SHA256（小写十六进制）。用来断言「这个文件没被动过」。</summary>
+        private static string Sha256File(string path)
+        {
+            try
+            {
+                using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+                using (FileStream fs = File.OpenRead(path))
+                {
+                    byte[] h = sha.ComputeHash(fs);
+                    StringBuilder sb = new StringBuilder(h.Length * 2);
+                    for (int i = 0; i < h.Length; i++) sb.Append(h[i].ToString("x2"));
+                    return sb.ToString();
+                }
+            }
+            catch (Exception) { return "?"; }
         }
 
         private static object Field(object o, string name)

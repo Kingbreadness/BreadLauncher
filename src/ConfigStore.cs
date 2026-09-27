@@ -275,7 +275,12 @@ namespace BreadLauncher
             s.Groups = clean;
 
             // 旧配置升级：只有「已固定」没有分组时，把它们装进一个「常用」大文件夹。
-            if (s.Groups.Count == 0 && s.Pinned.Count > 0)
+            // ★必须带 `Seeded == false`：`Normalize` 读和写都会跑一遍，而 `Pinned` 在全工程里
+            //   **没有任何地方会清空它**（见 README/AGENTS 承诺的「你删掉它就不会自己回来」）。
+            //   不加这个守卫的话，用户把分组**全删光**的那一刻这里会当场复活一个装老固定项的「常用」组，
+            //   再删再回来，永远清不空（实测用户配置：Pinned 6 条、这 6 条一条都不在任何分组里、Seeded=True）。
+            //   老配置（没有 Seeded 这个键）反序列化后 Seeded=false → 迁移照做，升级路径不受影响。
+            if (s.Seeded == false && s.Groups.Count == 0 && s.Pinned.Count > 0)
             {
                 AppGroup g = new AppGroup("常用");
                 HashSet<string> migrated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

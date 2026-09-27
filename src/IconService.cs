@@ -85,7 +85,12 @@ namespace BreadLauncher
             lock (_lock)
             {
                 Bitmap hit;
-                if (_mem.TryGetValue(cacheKey, out hit)) return hit;
+                // ★命中 null（=「这张以前取不到」）**不算命中**：null 是合法缓存值（契约：null → 画首字母色块），
+                //   但它记的是**过去那一次失败**，不是「永远取不到」。直接 return 的话，
+                //   这一次会话就再也不会重试这张图了 —— 症状是「图标变成色块，重启一下又好了」。
+                //   放它过去重新走「读磁盘 PNG / 重新抽图」那一段：那次失败的原因可能已经消失
+                //   （另一个线程已经把好图写进磁盘、系统图标缓存刚就绪、.url 刚补上真图标来源…）。
+                if (_mem.TryGetValue(cacheKey, out hit) && hit != null) return hit;
             }
 
             Bitmap result = null;
@@ -118,6 +123,17 @@ namespace BreadLauncher
                 Bitmap exist;
                 if (_mem.TryGetValue(cacheKey, out exist))
                 {
+                    // ★「失败」不能盖住「成功」：另一个线程先失败时会把 null 存进来，
+                    //   而 null 也是合法缓存值（契约：null → 界面画首字母色块）。
+                    //   这里如果直接 return exist，就变成**拿一张好图去换一个 null**，
+                    //   自己刚做的那张还会被 Dispose 掉 —— 症状是「这个图标变成色块了，
+                    //   重启一下又好了」（磁盘 PNG 其实已经写好，见上面 104 行）。
+                    //   所以：手里有真图就覆盖掉那个 null（null 没有东西要释放）。
+                    if (exist == null && result != null)
+                    {
+                        _mem[cacheKey] = result;
+                        return result;
+                    }
                     // 别人（绘制线程 / 另一个 worker）先把它放好了：把自己刚做的那张释放掉，
                     // 否则每竞争一次就漏一张 GDI 位图（终结器要等两次 GC 才收）。
                     if (object.ReferenceEquals(exist, result) == false)
