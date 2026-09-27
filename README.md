@@ -158,7 +158,7 @@ PowerShell 里同一行（路径带空格、参数用引号更稳）：
 
 编完直接跑：`运行.cmd`（它只启动已经编好的 `build\BreadLauncher.exe`，**不会重新编译**）。
 
-> 关于 `/codepage:65001`：本机独立验收实测（见 `build\verify\VERIFY-REPORT.md`）**不带它也能编译成功**，产出的 exe 跑 `--scan` 的输出与带它时**逐字节相同**；反过来，显式写 `/codepage:936` 才会 exit 1 并报一大堆错。13 个 `.cs` 都没有 BOM。所以这个开关的作用是「把『按 UTF-8 读源码』写明确」，保留它、别乱改，但也别以为不加就编译不过。
+> 关于 `/codepage:65001`：本机独立验收实测（报告属本机证据，不随仓库发布）**不带它也能编译成功**，产出的 exe 跑 `--scan` 的输出与带它时**逐字节相同**；反过来，显式写 `/codepage:936` 才会 exit 1 并报一大堆错。13 个 `.cs` 都没有 BOM。所以这个开关的作用是「把『按 UTF-8 读源码』写明确」，保留它、别乱改，但也别以为不加就编译不过。
 
 ## 七、数据与隐私
 
@@ -181,50 +181,13 @@ PowerShell 里同一行（路径带空格、参数用引号更稳）：
 
 ## 八、自检命令（排查问题用）
 
-```bat
-build\BreadLauncher.exe --scan                      列出扫描到多少应用、分组统计、前 40 条（桌面快捷方式现在也算正式条目）
-build\BreadLauncher.exe --preview 图.png [settings.json]
-                                                    离屏渲染一张面板图（检查排版）；给了 settings.json 就读它
-build\BreadLauncher.exe --previewall 图.png 0 [settings.json]
-                                                    离屏渲染「查看全部」窗口（0 = 第 1 个分组，序号必填）
-build\BreadLauncher.exe --launch 名称                直接走启动链路（验证能不能拉起应用）
-build\BreadLauncher.exe --icontest 名称              把某个应用的图标导出到 build\icontest\（含清缓存强制重取）
-build\BreadLauncher.exe --icons                     列出补到「真实图标来源」的条目
-build\BreadLauncher.exe --dupicons                  按图标像素哈希找重复图标（看「通用空白图标」清干净没有）
-```
-
-> 本机实测：桌面快捷方式补齐之后，`--scan` 报 **175** 条，其中 **88** 条在桌面上有快捷方式 —— 79 条是本来就扫到的同名条目（打「桌面」标记），9 条是只存在于桌面、按快捷方式本身新建的条目，**和桌面上实际的 88 个快捷方式完全对齐**（个人桌面 59 个 + 公共桌面 29 个）。数字随机器上装的软件而变。
-
-这些模式都**不弹可见的面板**（预览窗口建在屏幕外的 `-4000,-2000`），**唯一保证绝对不动的是 `settings.json`**（你的分组数据不会被改；唯一例外是它本来就已读坏时会被备份成 `settings.json.bad`，原文件依然不动）。其余副作用是真实存在的，跑之前心里有数：
-
-- `--scan` / `--launch` / `--icons` 都会真扫一遍应用，每次往 `build\cache\log.txt` 追加两行（「图标来源补全」+「扫描完成」）。
-- `--dupicons` 除了扫一遍写日志，还会**对每个条目取一张 32px 图标并落盘**到 `build\cache\icons\`。
-- `--preview` / `--previewall` 会**真的创建一个屏幕外窗口**（布局、取图标全跑一遍），所以会把取到的图标 PNG 写进 `build\cache\icons\`。写日志**不是无条件的**：只有真的触发扫描（没有可用缓存，或缓存超过 12 小时触发后台刷新）或取图失败时才写 `build\cache\log.txt`；缓存新鲜、图标齐全时预览不写日志。
-- `apps-cache.json` 只有 `--preview` 会写：**没有可用缓存时必写**，缓存超 12 小时会触发一次后台刷新（刷新完成也会写）。**`--previewall` 从不写它** —— 它只读缓存或现扫一遍，不落盘。
-- `--icontest` **会先清掉图标缓存再强制重取**：`IconService.ClearDiskCache()` 会清内存缓存 + 删掉 `build\cache\icons\` 目录下的所有 `*.png`（目录本身保留）—— 想保住图标缓存就别跑它。
-- `--launch` 会真的启动应用，别拿它试你不认识的名字。
-- 缓存新鲜时（`build\verify\VERIFY-REPORT.md` 里实测过）预览连日志都不写、`settings.json` 的 mtime 和哈希都不变；但别把这条当成「自检绝对无副作用」的保证 —— 上面几条才是完整规则。
-
-三个坑：
-
-- **参数给少了会变成正常启动**：自检分支是按参数个数严格匹配的（`--preview` 要 2 个参数、`--previewall` 要 3 个以上），所以 `--previewall 图.png`（漏了组序号）或者光写一个 `--preview` **不匹配任何自检分支**，程序会掉进「单实例 + 打开面板」那条正常启动路径 —— 也就是**真的把面板 GUI 开出来，并正常读写你的 `settings.json`**。自检时参数一定写全，`--previewall` 的组序号（第一个分组写 `0`）不能省。
-- **抓 stdout**：exe 确实是 **GUI 子系统**（PE Subsystem=2），但 PowerShell 管道**能**拿到输出 —— pwsh 7.6.4 实测 `& .\build\BreadLauncher.exe --scan 2>&1 | Out-String` 抓到 2684 字符真实输出；只是子进程吐的字节是 **CP936/GBK**，pwsh 按 UTF-8 解出来是乱码。想读得懂就重定向到文件再按 GBK 解码：`cmd /c "build\BreadLauncher.exe --scan > build\scan.txt"`。
-- **别把两种编码搞混**：子进程 stdout 是 GBK，而 `build\cache\log.txt` 本身是 **UTF-8（无 BOM）**。
-
-### 开发用探针：`tools\ClickProbe.cs`
-
-它和 `src\*.cs` 一起编成一个**独立的小 exe**（不是成品的一部分），用反射验证几处最容易写错的交互：分页算得对不对（这组几页、第 1 页第 9 格就是第 9 个应用、第 2 页第 1 格是第 10 个、越界格子必须是空）、滚轮停在文件夹上是不是翻内页（向下 → 下一页，向上 → 上一页）、滚轮不在文件夹上时方向与系统一致（向下 = 看更下面的分组）；图标之间那几像素的缝隙也要测出来是「图块主体」而不是旁边的图标。它还会真的走一遍这些新交互：在「添加应用」选择器里点三行 → 确认打钩数 = 3；把一个文件夹拖到第 2 个位置、再拖到空白处（应该落到末尾）；拖右下角把面板拉大；在空白处按住拖动搬走面板；**拖顶部那根固定把手也能搬面板** —— 后两条同时验证「拖完面板不会被误关掉」。滚动相关它也管：扫像素核对面板那条和列表那条滚动条真的画在同一套位置上（都按 `Theme.Scroll` 的墨水 4px、距右缘 3px 来，比对时留 ±1px 抗锯齿容差），核对滚轮步长（列表一格 = 3 行、面板整格 = 一整行），核对滚动条的命中区不会把行右端的勾选框抢走；还能直接断言「添加应用」选择器的右键菜单有哪些项、菜单开着时窗口不会被「失去焦点」关掉、**在文件夹最后一页继续滚会落回面板滚动并正好走一整行**、**点分组区那条滚动条不会变成「把面板拉大」**。
+最常用的三条（**都不弹面板、也不改你的分组**；完整清单、会写哪些文件、注意事项见 [`docs/selfcheck.md`](docs/selfcheck.md)）：
 
 ```bat
-C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /platform:x64 /codepage:65001 ^
-  /out:build\clickprobe.exe /main:BreadLauncher.ClickProbe ^
-  /reference:System.dll,System.Core.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Web.Extensions.dll ^
-  tools\ClickProbe.cs src\*.cs
-
-build\clickprobe.exe [settings.json] [组序号]
+build\BreadLauncher.exe --scan                       列出扫描到多少应用、分组统计、前 40 条
+build\BreadLauncher.exe --preview 图.png [settings.json]   离屏渲染一张面板图（检查排版）
+build\BreadLauncher.exe --previewall 图.png 0 [settings.json]   渲染「查看全部」窗口
 ```
-
-探针只读配置（面板带预览模式，**不写 `settings.json`**）、不会启动任何应用，「查看全部」窗口由定时器自动取消；报告同时打印到控制台并写一份 `build\clickprobe-report.txt`。它和 `--preview` 一样会真的创建屏幕外窗口，所以也会写图标缓存（日志同 `--preview`：只有触发扫描或取图失败时才写）。要验分页那几条，得给它一份含**超过 9 个应用**的分组的配置（正好 9 个会去验边界：第 9 格能启动、只有 1 页）；它跑完还会顺手截一张第 2 页的面板图 `build\panel-page2.png`，可以直接打开看排版。
 
 ## 九、已知限制
 
@@ -242,56 +205,17 @@ build\clickprobe.exe [settings.json] [组序号]
 
 ```
 BreadLauncher\
-├─ 编译-零安装.cmd        一键编译（缺图标时顺手生成图标）
-├─ 运行.cmd               只运行已经编好的 exe（不编译）
-├─ app.manifest           asInvoker + 系统 DPI，避免高 DPI 下糊
-├─ assets\
-│   └─ BreadLauncher.ico  16~256 多尺寸图标（丢了可用 tools\MakeIcon.cs 生成）
-├─ src\                   全部源码（见下表）
-├─ tools\                 开发 / 探针脚本（9 个 .cs，不随成品发布）
-│   ├─ MakeIcon.cs        图标生成器（生成 assets\BreadLauncher.ico）
-│   ├─ ClickProbe.cs      自检探针（60+ 条断言：分页、命中、框选、拖排序、滚动条、右键菜单、来源筛选、显示名、穿透…）→ build\clickprobe.exe
-│   ├─ IconProbe.cs       取图标探针
-│   ├─ MarshalTest.cs     P/Invoke 声明对照测试
-│   ├─ AlphaTest.cs       取图 alpha 通道实验（导出各尺寸位图看透明度有没有丢）
-│   ├─ AppsProbe.cs       按名字打印 AppsFolder 条目的 ExtendedProperty（查 TargetParsingPath 用）
-│   ├─ RawIco.cs          拆开 .ico 的各个尺寸图层
-│   ├─ Crop.cs            预览图裁剪 / 放大（看图辅助）
-│   └─ IcoCheck.cs         拆开 .ico 的每帧 + 各取法的「噪声分」（查彩色乱码图标用）
-├─ build\                 编译产物 + 数据（**不随仓库发布**，除下面 5 个自检配置和 cliptest.cs）
-│   ├─ BreadLauncher.exe  成品
-│   ├─ clickprobe.exe     开发探针（可选）
-│   ├─ settings.json      你的分组配置
-│   ├─ verify\            独立验收的复现报告与原始证据（VERIFY-REPORT.md 等）
-│   └─ cache\             图标、应用列表缓存、日志
-├─ README.md              本文件
-├─ AGENTS.md              给下一个接手的人 / AI 的工作约定
-├─ 交接文档.md            内部交接与验收记录（含个人路径，**不随仓库发布**）
-├─ .gitignore             挡住用户数据（settings / 缓存 / 本机测试配置）、构建产物和一次性证据
-  └─ .gitattributes         统一换行（Windows 项目：全部 CRLF）、图标/截图按二进制处理
+├─ 编译-零安装.cmd / 运行.cmd   一键编译（缺图标会自动生成）/ 只运行已编好的 exe
+├─ app.manifest                asInvoker + 系统 DPI，避免高 DPI 下糊
+├─ assets\BreadLauncher.ico    16~256 多尺寸图标（配色见 tools\MakeIcon.cs）
+├─ src\                        13 个源文件（每个文件的职责见 docs\layout.md）
+├─ tools\                      开发与自检工具（不随成品发布）
+├─ docs\                       界面截图、演示配置、开发文档
+└─ build\                      编译产物 + 数据（不随仓库发布，仅自检配置随仓库走）
 ```
 
-`build\` 里还会散着一些自检 / 探针留下的临时文件（`scan.txt`、`preview-*.png`、`clickprobe-report.txt` 之类），可以随手删；但 `build\verify\` 是独立验收留下的原始证据（复现报告 + 各次运行的输出字节），**先别删**。
+> 每个文件 / 目录的详细说明、以及 `src\` 里 13 个源文件的职责表：见 [`docs/layout.md`](docs/layout.md)。
 
-⚠ **要把这个项目发给别人 / 开源的话**：`build\test-settings-groups.json`（还有 `build\tmp.json`）里存的是**你自己桌面上真实应用的路径 / `steam://` 链接**，别带出去；给外人复现用的通用配置是 `build\test-settings-scroll.json`（13 个空组）。仓库里的 `.gitignore` 已经把这些连同 `build\settings*.json`、`build\*.png` 一起挡住了，照着它挑要带的东西就不会漏。
-
-`src\` 里各文件的分工：
-
-| 文件 | 职责 |
-|---|---|
-| `Program.cs` | 入口、单实例、全部自检模式 |
-| `MainForm.cs` | 面板窗体：大文件夹布局与**组内分页**、**面板搬动 / 缩放**、**拖动分组换位**、命中测试、启动、四套右键菜单、落盘 |
-| `GroupAppsForm.cs` | 「查看全部」窗口：整组列表、单击启动、右键移除 |
-| `Dialogs.cs` | 三个深色对话框：`TextPromptForm`（新建 / 重命名分组 / 输入扫描路径）、`AppPickerForm`（**勾选式多选**添加应用，带筛选框 + **「来源」菜单**（全部 / 桌面 / 自定义文件夹 / 管理自定义文件夹…）+ 右键重命名 / 名字常驻）、`ScanFoldersForm`（管理自定义扫描文件夹） |
-| `Controls.cs` | 自绘控件：`FlatButton`、`AllAppsList`（列表 + 勾选框 + 「桌面」/「新增」小标签 + 手画滚动条）、深色菜单渲染器 |
-| `Groups.cs` | `AppGroup`（落盘结构）/ `GroupView`（解析后的视图模型） |
-| `IconService.cs` | 取图标（`IShellItemImageFactory` + 兜底），内存 / 磁盘缓存，3 条后台线程 |
-| `AppsFolderScanner.cs` | 扫 `shell:AppsFolder` **和桌面快捷方式**（桌面按顶层 + 一级子文件夹，且桌面条目不套名字噪声规则），噪声过滤、去重、补图标来源 |
-| `ConfigStore.cs` | `settings.json` / `apps-cache.json` / `log.txt` 读写（原子写） |
-| `Launcher.cs` | 启动应用（协议 / 真文件 / UWP 三个分支） |
-| `PinyinLetter.cs` | 汉字转拼音首字母（列表的 `# A B C …` 分组用） |
-| `Theme.cs` | 颜色、字体、DPI 换算、圆角绘制、亚克力 |
-| `Model.cs` | `AppEntry` 数据模型 |
 ## 许可
 
 MIT License —— 见 [`LICENSE`](LICENSE)。随便用、改、商用，保留版权声明即可。

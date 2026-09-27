@@ -73,4 +73,3 @@ build/*
 !build/test-settings-9apps.json
 !build/test-settings-36groups.json
 !build/test-settings-scroll.json
-!build/cliptest.cs
