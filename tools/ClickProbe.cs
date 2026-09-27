@@ -1475,37 +1475,48 @@ namespace BreadLauncher
                         };
                         // 基线：关掉亚克力（完全不挖空）→ 命中面板自己的才算「有效内部点」（自校准，别把窗口外的点算进来）
                         stName.Acrylic = false;
-                        Theme.ApplyBackdrop(f, false);
+                        SetAcrylicState(f, Theme.ApplyBackdrop(f, false));
                         f.Refresh(); Application.DoEvents();
                         List<Point> valid = new List<Point>();
                         for (int i = 0; i < blanks.Length; i++)
                             if (HitSelf(f, f.PointToScreen(blanks[i]))) valid.Add(blanks[i]);
 
-                        // 亚克力开着（默认观感）：同批点会穿透 —— 已知代价，只记录。
-                        // ★这里必须用 ApplyBackdrop 的**返回值**判断"效果到底生效没有"：离屏/预览窗口上
-                        //   SetWindowCompositionAttribute 本来就可能失败，此时会正确退回不透明 → 当然不穿透，
-                        //   那不是 bug（第一版断言没管这个，于是 5 个配置一起假失败）。
+                        // 亚克力开着（默认观感）：同批点会穿透 —— 已知代价。
+                        // ★两个前提都要满足，否则测出来的不是"穿透"而是"根本没挖空"：
+                        //   ① ApplyBackdrop 得真的生效（返回值）；
+                        //   ② 还得把窗体的 `_acrylicActive` 一起设上 —— PaintAll 靠它决定画不画不透明背景，
+                        //      只调 ApplyBackdrop 而不同步这个字段的话，背景照画 → 永远测不出穿透（踩过）。
                         stName.Acrylic = true;
                         bool acrylicApplied = Theme.ApplyBackdrop(f, true);
+                        SetAcrylicState(f, acrylicApplied);
                         f.Refresh(); Application.DoEvents();
                         int throughCount = 0;
                         for (int i = 0; i < valid.Count; i++)
                             if (HitSelf(f, f.PointToScreen(valid[i]))) throughCount++;
+                        // ★「挖空」要在**亚克力正开着**的这一刻读（下面马上就按配置还原了，还原后读的是另一回事）
+                        Color keyColor = f.TransparencyKey;
+                        bool keyed = (keyColor != Color.Empty) && (f.BackColor == keyColor);
 
                         stName.Acrylic = acrylicOn;
-                        Theme.ApplyBackdrop(f, acrylicOn);
+                        SetAcrylicState(f, Theme.ApplyBackdrop(f, acrylicOn));
                         f.Location = oldLocHit;          // 还原面板位置
                         f.Refresh();
 
                         // ★前提①：采样点得真的落在**探针自己的**面板上（你要是正开着 BreadLauncher，
                         //   它盖在离屏窗口上 → WindowFromPoint 命中的是它 → 有效点 0 个 → 跳过）。
-                        // ★前提②：亚克力得真的生效（离屏窗口上可能失败并退回不透明 → 跳过）。
+                        // ★前提②：亚克力得真的生效（极少数环境下会退回不透明 → 那当然不穿透）。
                         CheckIf(valid.Count > 0 && acrylicApplied,
                             "采样点被别的窗口挡住 / 面板不在屏幕内 / 离屏窗口上亚克力没生效（已退回不透明），跳过穿透检查",
                             throughCount < valid.Count,
                             "亚克力开着时面板空白处**会穿透鼠标**（命中自己 " + throughCount + "/" + valid.Count
                             + "）—— 这就是「整块透出桌面」观感的已知代价（用户报的「空白处滚滚轮、别的应用滚了」），"
                             + "关掉亚克力就完全不穿透；这条也是那次事件的回归测试");
+                        // ★不依赖屏幕几何的硬判据：亚克力生效 = 窗口真的被"挖空"了
+                        //   （BackColor 与 TransparencyKey 都设成同一个 key 色）。这条是本轮那个 bug 的回归测试：
+                        //   曾经按 SetWindowCompositionAttribute 的返回值判断成败 → 任何机器都判成失败 → 永远不生效。
+                        Check(acrylicApplied && keyed,
+                            "开着亚克力时窗口确实做了「挖空」（BackColor = TransparencyKey = " + keyColor + "）"
+                            + " —— 没挖空半透明就是假的；判据不看那个不可靠的 API 返回值");
                         Say("      已知代价：开着亚克力（默认）时同一批点命中自己=" + throughCount + "/" + valid.Count
                             + "（整块透出桌面的观感就是这么来的；不想穿透就在设置里关掉亚克力）");
                     }
@@ -1651,6 +1662,18 @@ namespace BreadLauncher
         {
             try { return WindowFromPoint(screenPt) == f.Handle; }
             catch (Exception) { return false; }
+        }
+
+        /// <summary>把「亚克力实际生效」的状态同步到窗体字段 —— PaintAll 靠它决定画不画不透明背景。
+        /// 只调 Theme.ApplyBackdrop 而不同步这个字段，窗口就不会真的"挖空"，穿透也就测不出来。</summary>
+        private static void SetAcrylicState(Form f, bool active)
+        {
+            try
+            {
+                typeof(MainForm).GetField("_acrylicActive", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, active);
+                f.Invalidate();
+            }
+            catch (Exception) { }
         }
 
         /// <summary>反射调 AppPickerForm.SetSource（「来源」菜单那三个模式）。</summary>

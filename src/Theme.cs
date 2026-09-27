@@ -240,17 +240,24 @@ namespace BreadLauncher
                 try
                 {
                     Marshal.StructureToPtr(policy, data.Data, false);
-                    int hr = SetWindowCompositionAttribute(f.Handle, ref data);
-                    bool ok = (hr == 0);
-                    if (!ok)
+                    // ★★**别拿这个 API 的返回值判成败**：它的返回值在不同 Windows 上不一致
+                    //   （本机实测成功时返回 1，而很多资料里写成功返回 0）—— 按返回值判断会出现
+                    //   「任何机器都开不了亚克力」的惨案（这个坑我自己踩过一次）。
+                    //   规矩：**只要调用没抛异常，就认为生效**（用户拍板：别管那个兜底隐患，直接生效）。
+                    SetWindowCompositionAttribute(f.Handle, ref data);
+                    return true;
+                }
+                catch
+                {
+                    // 连调用本身都失败：尽力补一发普通的模糊；还是不行才退回不透明
+                    try
                     {
-                        // 老系统不支持亚克力时退回普通的模糊
                         policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
                         Marshal.StructureToPtr(policy, data.Data, false);
-                        ok = (SetWindowCompositionAttribute(f.Handle, ref data) == 0);
+                        SetWindowCompositionAttribute(f.Handle, ref data);
+                        return true;
                     }
-                    if (ok) return true;
-                    // ★两种都不支持：把"挖空"撤回来，改成不透明面板 —— 别留一个全透明的破壳子
+                    catch { }
                     f.BackColor = BgBottom;
                     f.TransparencyKey = Color.Empty;
                     return false;
@@ -262,7 +269,6 @@ namespace BreadLauncher
             }
             catch
             {
-                // 出异常也退回不透明（宁可不好看，也不要透明的破窗口）
                 try { f.BackColor = BgBottom; f.TransparencyKey = Color.Empty; } catch { }
                 return false;
             }
