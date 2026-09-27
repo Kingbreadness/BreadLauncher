@@ -229,6 +229,16 @@ namespace BreadLauncher
                 string dir = Path.GetDirectoryName(file);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+                // ★先把上一次可能残留的 `xxx.old` 清掉。为什么必须清：
+                //   下面 `File.Replace(tmp, file, bak)` 会把上一版写到 `bak`，随后 `File.Move(bak, prev)`
+                //   把**它**变成后悔药。可要是某一次 `File.Move` 失败了（或走了 FAT32/网络盘那条回退路），
+                //   `bak` 就会留在盘上 —— 于是**下一次**落盘时 `File.Exists(bak)` 为真，
+                //   后悔药就被换成那个**陈旧、不属于本次**的文件；更糟的是回退分支已经先把正确的
+                //   上一版 `Copy` 进 `.prev` 了，紧接着又被这个陈旧的 `bak` 覆盖掉。
+                //   清掉之后 `File.Exists(bak)` 才真的代表「这一次 Replace 刚产出的上一版」。
+                try { if (File.Exists(file + ".old")) File.Delete(file + ".old"); }
+                catch (Exception) { }
+
                 string text = Json(o);
 
                 // ★内容没变就整个跳过：既不写文件，也不轮转 .prev（那才是「上一版」）
@@ -238,6 +248,16 @@ namespace BreadLauncher
                     LastWriteError = null;
                     return SaveResult.AlreadyCurrent;
                 }
+                // ★能不能确定「原来那份和我要写的是不是一样」？
+                //   文件根本不存在 → 没有「上一版」可言，随便写；
+                //   文件存在但**读不出内容**（权限/占用）→ **不知道**一不一样：
+                //     这时必须照写（否则用户的改动就丢了），但**绝不能轮转 .prev** ——
+                //     因为「内容没变就不写」那条守卫已经失效，而 `.prev` 里那唯一一份后悔药
+                //     会被这次（可能真的改了内容的）写入覆盖掉。
+                //   实测复现（独立复验给出的场景 s3）：把文件设成「能读属性、读不到内容」，
+                //   再落盘一次内容未变的配置 → 返回 Written，`.prev` 被换成与 settings.json 相同的内容，
+                //   日志里一个字都没有。修完之后这种情况只写正文、不碰后悔药。
+                bool canTellUnchanged = onDisk != null || File.Exists(file) == false;
 
                 int seq = System.Threading.Interlocked.Increment(ref _writeSeq);
                 tmp = file + "." + seq.ToString() + ".tmp";
@@ -271,18 +291,29 @@ namespace BreadLauncher
                             throw;
                         }
                     }
-                    // 上一版不删掉，留成 settings.json.prev：分组被误删/误清空时还能拿回来
-                    try
+                    // 上一版不删掉，留成 settings.json.prev：分组被误删/误清空时还能拿回来。
+                    // ★但「原来那份读不出来」时**不轮转**：那种情况下无法判断新内容和原来是不是一样，
+                    //   `.prev` 里那唯一一份后悔药不能被这次写入顶掉（见上面 canTellUnchanged 的说明）。
+                    if (canTellUnchanged)
                     {
-                        if (File.Exists(bak))
+                        try
                         {
-                            string prev = file + ".prev";
-                            try { if (File.Exists(prev)) File.Delete(prev); }
-                            catch (Exception) { }
-                            File.Move(bak, prev);
+                            if (File.Exists(bak))
+                            {
+                                string prev = file + ".prev";
+                                try { if (File.Exists(prev)) File.Delete(prev); }
+                                catch (Exception) { }
+                                File.Move(bak, prev);
+                            }
                         }
+                        catch (Exception) { }
                     }
-                    catch (Exception) { }
+                    else
+                    {
+                        // 留个痕：这次没能确认内容变没变，所以刻意没动后悔药
+                        Log(Program.AppDir, "⚠ 落盘前读不出原有内容（" + file
+                            + "），本次**没有**轮转 .prev —— 后悔药保留的是更早那一版，没被顶掉");
+                    }
                 }
                 else
                 {

@@ -87,9 +87,12 @@ namespace BreadLauncher
                 }
 
                 List<AppEntry> list = Dedupe(raw);
+                // ★每次都把「枚举失败」的记录清掉：`LastListError` 是静态字段、从不自己复位，
+                //   不清的话一次偶发失败会在**以后每一次**扫描的日志里重复报，看着像一直在坏。
+                LastListError = null;
                 ApplyIconSources(list, appDir);
-                AddDesktopShortcuts(list, appDir);
-                AddCustomFolders(list, appDir, customDirs);
+                AddDesktopShortcuts(list, appDir);   // 里面报「桌面那次枚举有没有失败」
+                AddCustomFolders(list, appDir, customDirs);   // 里面报「自定义目录那次枚举有没有失败」
                 Sort(list);
                 sw.Stop();
                 ConfigStore.Log(appDir, "扫描 shell:AppsFolder 完成：" + list.Count + "/" + count + " 项（去重前 " + raw.Count + "），用时 " + sw.ElapsedMilliseconds + " ms");
@@ -513,7 +516,11 @@ namespace BreadLauncher
                 ConfigStore.Log(appDir, "自定义目录：" + dirs.Count + " 个 → 新增 " + added + " 条、标记已有 " + marked + " 条"
                     + (missing > 0 ? "、不存在 " + missing + " 个" : "")
                     + (skippedNet > 0 ? "、跳过网络位置 " + skippedNet + " 个" : "")
-                    + (truncated > 0 ? "、有 " + truncated + " 个目录超过 " + MaxCustomPerDir + " 条被截断" : ""));
+                    + (truncated > 0 ? "、有 " + truncated + " 个目录超过 " + MaxCustomPerDir + " 条被截断" : "")
+                    // ★「新增 0 条」必须能区分「真没有」和「没扫到」：枚举失败时把原因带出来。
+                    //   （原来只在 AddDesktopShortcuts 里报一句，而它跑在**这一步之前** ——
+                    //     于是自定义目录的失败要等下一次扫描才被打印，文案还写着"上面这次"，误导。）
+                    + (string.IsNullOrEmpty(LastListError) ? "" : "　⚠ 上面这次有目录没能列出来（不是「没有文件」，是「没读到」）：" + LastListError));
         }
 
         /// <summary>每个自定义目录最多**新增**这么多条（防止把 System32 / 整个盘加进来把候选灌爆）。</summary>

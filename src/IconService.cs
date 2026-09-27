@@ -673,8 +673,9 @@ namespace BreadLauncher
                 hIcon = info.hIcon;
                 if (ret == IntPtr.Zero || hIcon == IntPtr.Zero) return null;
                 using (Icon ic = Icon.FromHandle(hIcon))
+                using (Bitmap tb = ic.ToBitmap())      // ★见下：ToBitmap 是新建的，得自己释放
                 {
-                    return Normalize(ic.ToBitmap(), size);
+                    return Normalize(tb, size);
                 }
             }
             catch
@@ -683,13 +684,15 @@ namespace BreadLauncher
             }
             finally
             {
-                // ★故意**不**调 DestroyIcon：SHGetFileInfo 给的常常是系统共享的图标句柄，
-                //   销毁它会把系统图标缓存弄坏，之后一批取图开始报「对象当前正在其他地方使用」
-                //   （21:45 那份日志里还在刷这个错，就是这条路径留下的）。
-                //   这里宁可漏一个句柄 —— 面板是「用完就退」的进程，句柄随进程一起回收，不会累积。
-                //   要真正干净就用上面的 ExtractAssociatedIcon（句柄是自己的），根本走不到这里。
-                // if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
-                if (hIcon != IntPtr.Zero) { /* 见上：不销毁共享句柄 */ }
+                // ★★这里**必须**销毁句柄。原来不销毁，理由写的是「SHGetFileInfo 给的常常是系统共享句柄，
+                //   销毁会弄坏系统图标缓存」—— 2026-09-27 实测**把这条前提证伪了**：
+                //     · 连调 500 次拿到 **500 个互不相同的句柄**（共享句柄必然反复返回同一个值）
+                //     · 代码里根本没有 SHGFI_SYSICONINDEX / IImageList（那才是共享那条路）
+                //     · 实测漏的量比原先以为的大：**每次 3 个 GDI + 1 个 USER 句柄**，
+                //       500 次 → GDI 43→1546，且 GC 之后一个都不回落
+                //   而 GDI 句柄是**进程私有**的，销毁它不可能影响 explorer 的图标缓存；
+                //   当初把它当成「21:45 那串 GDI+ 报错」的元凶是**因果链搞错了**（那时这行本来就没执行）。
+                if (hIcon != IntPtr.Zero) DestroyIcon(hIcon);
             }
         }
 

@@ -85,9 +85,10 @@ namespace BreadLauncher
                     if (glyphW > cap) glyphW = cap;
     
                     Rectangle gr = new Rectangle(pad, 0, glyphW, Height);
-                    // 注意这里**不用** Theme.DrawText（它带 EndEllipsis）；字形只用 NoPrefix
-                    TextRenderer.DrawText(g, Glyph, glyphFont, gr, fore,
-                        TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    // 字形不用 Theme.DrawText（它带 EndEllipsis，单字形用不上）；但要走 DrawTextRaw ——
+                    // 它内部照样夹裁剪（GDI 不认 GDI+ 的 SetClip，别让字形画到裁剪区外面去）
+                    Theme.DrawTextRaw(g, Glyph, glyphFont, gr, fore,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                     if (Style == Look.IconText && !string.IsNullOrEmpty(text))
                     {
                         Rectangle tr = new Rectangle(pad + glyphW, 0, Math.Max(1, Width - pad * 2 - glyphW), Height);
@@ -888,8 +889,8 @@ namespace BreadLauncher
                 if (on)
                 {
                     Theme.FillRound(g, cr, Theme.Px(this, 4), Theme.Accent);
-                    TextRenderer.DrawText(g, "\uE73E", Theme.Glyph(Theme.Px(this, 9)), cr, Theme.BgBottom,
-                        TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    Theme.DrawTextRaw(g, "\uE73E", Theme.Glyph(Theme.Px(this, 9)), cr, Theme.BgBottom,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                 }
                 else
                 {

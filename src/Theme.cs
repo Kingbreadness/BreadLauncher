@@ -202,6 +202,23 @@ namespace BreadLauncher
                 TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak | extra);
         }
 
+        /// <summary>
+        /// 画一个字（字形 / 勾 / 首字母这类**单个符号**）：和 <see cref="DrawText"/> 一样自己夹裁剪，
+        /// 但**不带 EndEllipsis**（单字符用不上，带上反而会改变度量）。
+        /// ★为什么必须有这个：这些调用点原来直接调 `TextRenderer`，而 **GDI 不认 GDI+ 的裁剪区** ——
+        ///   2026-09-27 出图实测：面板高度 772~802 时，被下沿切掉的格子里那张**首字母色块（GDI+）
+        ///   被裁得一个像素不剩，字母却照画**，于是底栏上方那条空白带里浮出三个孤立字母
+        ///   （O x∈[289,308] y∈[750,771] 等，逐像素扫描确认）。这是当年「页脚冒出游离加号」的同族。
+        /// </summary>
+        public static void DrawTextRaw(Graphics g, string text, Font font, Rectangle rect, Color color,
+                                       TextFormatFlags flags)
+        {
+            if (g == null) return;
+            if (ClampToClip(g, ref rect) == false) return;
+            TextRenderer.DrawText(g, text ?? string.Empty, font, rect, color,
+                TextFormatFlags.NoPrefix | flags);
+        }
+
         /// <summary>把 rect 夹进当前裁剪区；整块在外返回 false（GDI 不认 GDI+ 裁剪，得自己来）。</summary>
         private static bool ClampToClip(Graphics g, ref Rectangle rect)        {
             RectangleF vis = g.VisibleClipBounds;
@@ -353,8 +370,10 @@ namespace BreadLauncher
             Color c = TilePalette[(h & 0x7FFFFFFF) % TilePalette.Length];
             FillRound(g, r, radius, c);
             float fs = Math.Max(7f, r.Height * 0.44f);
-            TextRenderer.DrawText(g, letter, Ui(fs, FontStyle.Bold), r, Color.White,
-                TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            // ★走 DrawTextRaw（内部夹裁剪）：直接调 TextRenderer 的话，被下沿切掉的格子里
+            //   色块会被 GDI+ 裁光、字母却照画 → 底栏上方浮出孤立字母（2026-09-27 出图实测过）。
+            DrawTextRaw(g, letter, Ui(fs, FontStyle.Bold), r, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
         // ---------------- 滚动度量（三处共用，别再各写各的） ----------------

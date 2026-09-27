@@ -2011,6 +2011,70 @@ namespace BreadLauncher
             }
             catch (Exception exNm) { Check(false, "名字常驻留位断言异常：" + exNm.Message); }
 
+            // ★★ 变体：三条「拖动/缩放结束」的分支必须都作废 `_downValid`
+            //   （不然拖完面板之后**第一次右键菜单会被吃掉**：右键不刷新 _downPoint，
+            //     拿的是上次左键的按下点，于是「移动超过 3px 就不算点击」那条判定把右键也挡了）
+            // ★走真实鼠标路径（OnMouseDown → OnMouseMove → OnMouseUp 通过反射调），不只看字段。
+            // ★鼠标左键按下之后**不移动**再抬起，才能走到需要 _downValid 的那条路（安全：不弹菜单）。
+            try
+            {
+                FieldInfo fDownValid = typeof(MainForm).GetField("_downValid", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fPanelMoving = typeof(MainForm).GetField("_panelMoving", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fPanelMoved = typeof(MainForm).GetField("_panelMoved", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fDragActive = typeof(MainForm).GetField("_dragActive", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fDragFrom = typeof(MainForm).GetField("_dragFrom", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fDragTo = typeof(MainForm).GetField("_dragTo", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fResizing = typeof(MainForm).GetField("_panelResizing", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo mDown = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo mUp = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo mMove = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(fDownValid != null && mDown != null && mUp != null && mMove != null,
+                    "能反射到 _downValid 与三个鼠标处理（用来复现「拖完右键被吃掉」）");
+
+                if (fDownValid != null && mDown != null && mUp != null)
+                {
+                    // 先找一个空白点按下（不落在任何分组上），这样按下时进入「准备搬面板」那条路
+                    int gLeft = (int)Field(f, "_groupLeft");
+                    int gTop = (int)Field(f, "_groupTop");
+                    Point blank = new Point(Theme.Px(f, 4), Theme.Px(f, 4));   // 左上角，避开分组区和把手
+                    Check(blank.X < gLeft || blank.Y < gTop, "选中的按下点确实在分组区之外（空白点）");
+
+                    string[] names = new string[] { "搬面板", "拖分组", "缩放面板" };
+                    bool[] cleared = new bool[3];
+                    for (int vi = 0; vi < 3; vi++)
+                    {
+                        // 每次都从「左键按在空白处」开始
+                        mDown.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, blank.X, blank.Y, 0) });
+                        // 再摆成对应的拖动状态（模拟那三种拖动已经把状态置上了）
+                        fPanelMoving.SetValue(f, false);
+                        fPanelMoved.SetValue(f, false);
+                        fDragActive.SetValue(f, false);
+                        fResizing.SetValue(f, false);
+                        fDownValid.SetValue(f, true);            // 保证前提成立（真按下时它确实是 true）
+                        if (vi == 0) { fPanelMoving.SetValue(f, true); fPanelMoved.SetValue(f, true); }
+                        if (vi == 1) { fDragActive.SetValue(f, true); fDragFrom.SetValue(f, 0); fDragTo.SetValue(f, 0); }
+                        if (vi == 2) { fResizing.SetValue(f, true); }
+                        // 松手：不移动（所以不会走进「移动超过 3px」那条判定）
+                        mUp.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, blank.X, blank.Y, 0) });
+                        cleared[vi] = (bool)fDownValid.GetValue(f) == false;
+                        // 复原状态，别影响后面的断言
+                        fPanelMoving.SetValue(f, false);
+                        fPanelMoved.SetValue(f, false);
+                        fDragActive.SetValue(f, false);
+                        fDragFrom.SetValue(f, -1);
+                        fDragTo.SetValue(f, -1);
+                        fResizing.SetValue(f, false);
+                        fDownValid.SetValue(f, false);
+                        Application.DoEvents();
+                    }
+                    Check(cleared[0] && cleared[1] && cleared[2],
+                        "拖完/缩完之后 `_downValid` 都被作废（搬面板=" + cleared[0]
+                        + "、拖分组=" + cleared[1] + "、缩放=" + cleared[2]
+                        + "）—— 不作废的话，下一次**右键**会被「移动超过 3px 就不算点击」误伤，菜单弹不出来");
+                }
+            }
+            catch (Exception exDv) { Check(false, "拖动后右键断言异常：" + exDv.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
