@@ -408,6 +408,16 @@ namespace BreadLauncher
             Theme.ApplyRoundedCorners(this);
             Theme.ApplyBackdrop(this, _settings.Acrylic);
 
+            // ★亚克力是**默认开启**的，而它有个反直觉的代价（空白处鼠标穿透）—— 头一次打开时提示一下，
+            //   否则新用户会以为「滚轮滚到别的窗口去了」是 bug。只提示一次；预览/自检模式必须跳过，
+            //   不然自动化出图会被模态框卡住。
+            if (PreviewMode == false && _settings.Acrylic && _settings.AcrylicHintShown == false)
+            {
+                _settings.AcrylicHintShown = true;
+                PersistSettings();
+                BeginInvoke((MethodInvoker)delegate { ShowAcrylicHint(); });
+            }
+
             _shownAt = DateTime.Now;
             TopMost = true;   // 构造期设过，但窗口创建/定位之后会被吃掉一次，这里再钉一遍
             LoadData(false);
@@ -2282,6 +2292,16 @@ namespace BreadLauncher
             _settings.Acrylic = !_settings.Acrylic;
             PersistSettings();
             Theme.ApplyBackdrop(this, _settings.Acrylic);
+
+            // ★亚克力是**默认开启**的，而它有个反直觉的代价（空白处鼠标穿透）—— 头一次打开时提示一下，
+            //   否则新用户会以为「滚轮滚到别的窗口去了」是 bug。只提示一次；预览/自检模式必须跳过，
+            //   不然自动化出图会被模态框卡住。
+            if (PreviewMode == false && _settings.Acrylic && _settings.AcrylicHintShown == false)
+            {
+                _settings.AcrylicHintShown = true;
+                PersistSettings();
+                BeginInvoke((MethodInvoker)delegate { ShowAcrylicHint(); });
+            }
             Invalidate(true);
             if (_settings.Acrylic) ShowAcrylicHint();   // 打开亚克力就提示一次代价（用户要求：只留提示）
         }

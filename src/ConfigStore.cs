@@ -22,7 +22,7 @@ namespace BreadLauncher
         /// <summary>全部应用页是否用网格显示。</summary>
         public bool GridMode = false;
         /// <summary>亚克力半透明（默认关闭：纯色更稳，用户可在设置里打开试试）。</summary>
-        public bool Acrylic = false;
+        public bool Acrylic = true;      // ★默认开启（用户要的：一打开就是半透明效果）
         /// <summary>文件夹大小（百分比，100 = 标准；设置菜单里可选 85 / 100 / 120）。</summary>
         public int FolderScale = 100;
         /// <summary>面板位置（左上角，屏幕坐标）。负值 = 还没定过，按「贴鼠标所在屏的任务栏上方居中」自动放。</summary>
@@ -50,6 +50,9 @@ namespace BreadLauncher
 
         /// <summary>鼠标停在小图标上时是否浮出名字（设置菜单里可关；默认开）。</summary>
         public bool HoverNames = true;
+
+        /// <summary>「亚克力会影响鼠标穿透」那条提示有没有看过（只看一次，别每次启动都弹）。</summary>
+        public bool AcrylicHintShown = false;
 
 
         public const int NewBadgeDays = 7;
