@@ -1481,9 +1481,12 @@ namespace BreadLauncher
                         for (int i = 0; i < blanks.Length; i++)
                             if (HitSelf(f, f.PointToScreen(blanks[i]))) valid.Add(blanks[i]);
 
-                        // 亚克力开着（默认观感）：同批点会穿透 —— 已知代价，只记录
+                        // 亚克力开着（默认观感）：同批点会穿透 —— 已知代价，只记录。
+                        // ★这里必须用 ApplyBackdrop 的**返回值**判断"效果到底生效没有"：离屏/预览窗口上
+                        //   SetWindowCompositionAttribute 本来就可能失败，此时会正确退回不透明 → 当然不穿透，
+                        //   那不是 bug（第一版断言没管这个，于是 5 个配置一起假失败）。
                         stName.Acrylic = true;
-                        Theme.ApplyBackdrop(f, true);
+                        bool acrylicApplied = Theme.ApplyBackdrop(f, true);
                         f.Refresh(); Application.DoEvents();
                         int throughCount = 0;
                         for (int i = 0; i < valid.Count; i++)
@@ -1494,10 +1497,11 @@ namespace BreadLauncher
                         f.Location = oldLocHit;          // 还原面板位置
                         f.Refresh();
 
-                        // ★前提：采样点得真的落在**探针自己的**面板上。你要是正好开着 BreadLauncher，
-                        //   它会盖在离屏窗口上面 → WindowFromPoint 命中的是它 → 有效点 0 个 → 这不是 bug，跳过。
-                        CheckIf(valid.Count > 0,
-                            "采样点被别的窗口挡住（比如你正开着面板）/ 面板不在屏幕内，跳过穿透检查",
+                        // ★前提①：采样点得真的落在**探针自己的**面板上（你要是正开着 BreadLauncher，
+                        //   它盖在离屏窗口上 → WindowFromPoint 命中的是它 → 有效点 0 个 → 跳过）。
+                        // ★前提②：亚克力得真的生效（离屏窗口上可能失败并退回不透明 → 跳过）。
+                        CheckIf(valid.Count > 0 && acrylicApplied,
+                            "采样点被别的窗口挡住 / 面板不在屏幕内 / 离屏窗口上亚克力没生效（已退回不透明），跳过穿透检查",
                             throughCount < valid.Count,
                             "亚克力开着时面板空白处**会穿透鼠标**（命中自己 " + throughCount + "/" + valid.Count
                             + "）—— 这就是「整块透出桌面」观感的已知代价（用户报的「空白处滚滚轮、别的应用滚了」），"

@@ -39,6 +39,8 @@ namespace BreadLauncher
 #pragma warning disable 0414   // 这两个标记仍由菜单 / 模态框维护，只是不再参与「失焦是否关面板」的判断
         private bool _suppressDeactivate;
         private bool _modalOpen;
+        /// <summary>亚克力**实际生效**没有（系统不支持时会自动退回不透明）。PaintAll 靠它决定要不要画背景。</summary>
+        private bool _acrylicActive;
 #pragma warning restore 0414
         private DateTime _shownAt = DateTime.Now;
         private int _pendingIcons;
@@ -406,7 +408,7 @@ namespace BreadLauncher
                 (_settings != null && _settings.PanelW > 0) ? _settings.PanelW : Theme.Px(this, 640),
                 (_settings != null && _settings.PanelH > 0) ? _settings.PanelH : Theme.Px(this, 400));
             Theme.ApplyRoundedCorners(this);
-            Theme.ApplyBackdrop(this, _settings.Acrylic);
+            _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);   // 返回值 = 实际生效没有
 
             // ★亚克力是**默认开启**的，而它有个反直觉的代价（空白处鼠标穿透）—— 头一次打开时提示一下，
             //   否则新用户会以为「滚轮滚到别的窗口去了」是 bug。只提示一次；预览/自检模式必须跳过，
@@ -646,7 +648,7 @@ namespace BreadLauncher
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.CompositingMode = CompositingMode.SourceOver;
 
-            bool acrylic = (_settings == null) ? false : _settings.Acrylic;
+            bool acrylic = _acrylicActive;      // ★用"实际生效"而不是设置值：系统不支持时这里会是 false → 画不透明背景
             // ★亚克力 = 不画背景（整块透出桌面，最好看）。代价：被挖空的像素**连鼠标一起穿透**
             //   （MSDN：color-keyed 区域会让鼠标消息穿过去）—— 「鼠标在面板空白处滚滚轮，别的应用滚了」就是这个。
             //   用户拍板：**好看优先**，靠设置菜单的文案 + 打开时的一次提示说清代价（那个"是否穿透"的开关已按用户要求删掉）。
@@ -2291,19 +2293,27 @@ namespace BreadLauncher
         {
             _settings.Acrylic = !_settings.Acrylic;
             PersistSettings();
-            Theme.ApplyBackdrop(this, _settings.Acrylic);
-
-            // ★亚克力是**默认开启**的，而它有个反直觉的代价（空白处鼠标穿透）—— 头一次打开时提示一下，
-            //   否则新用户会以为「滚轮滚到别的窗口去了」是 bug。只提示一次；预览/自检模式必须跳过，
-            //   不然自动化出图会被模态框卡住。
-            if (PreviewMode == false && _settings.Acrylic && _settings.AcrylicHintShown == false)
-            {
-                _settings.AcrylicHintShown = true;
-                PersistSettings();
-                BeginInvoke((MethodInvoker)delegate { ShowAcrylicHint(); });
-            }
+            _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);
             Invalidate(true);
-            if (_settings.Acrylic) ShowAcrylicHint();   // 打开亚克力就提示一次代价（用户要求：只留提示）
+            // 打开亚克力就讲一次代价（用户要求：只留提示）。
+            // ★系统不支持时要说实话 —— 别说"已开启、会透出桌面"，那会让人以为坏了。
+            if (_settings.Acrylic && _acrylicActive) ShowAcrylicHint();
+            else if (_settings.Acrylic && _acrylicActive == false) ShowAcrylicUnsupportedHint();
+        }
+
+        /// <summary>系统既不支持亚克力也不支持模糊时的说明（此时面板保持不透明，比全透明的空壳子好）。</summary>
+        private void ShowAcrylicUnsupportedHint()
+        {
+            try
+            {
+                _modalOpen = true;
+                MessageBox.Show(this,
+                    "这台系统的「亚克力 / 模糊」接口都不可用，所以面板**保持不透明**（比留一个全透明的空壳子好）。"
+                    + "\n\n开关状态记下了：换到支持的 Windows（Win10 1803+ / Win11）上再打开，效果就会出来。",
+                    "BreadLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception) { }
+            finally { _modalOpen = false; }
         }
 
         private void ClearIcons()

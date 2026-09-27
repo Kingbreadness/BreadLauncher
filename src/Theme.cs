@@ -204,17 +204,22 @@ namespace BreadLauncher
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-        /// <summary>打开/关闭亚克力半透明。不支持就退到普通模糊，再不行就什么都不加（不会改成纯色兜底）。</summary>
-        public static void ApplyBackdrop(Form f, bool acrylic)
+        /// <summary>
+        /// 打开/关闭亚克力半透明。**返回实际生效的观感**：true = 背景真的透出桌面（窗口已挖空），
+        /// false = 不透明（关掉了，或者系统既不支持亚克力也不支持模糊 —— 这时**主动退回不透明**）。
+        /// ★为什么要有这个返回值：亚克力默认开启，而在老系统上"挖空成功、模糊失败"会得到一个
+        ///   **完全透明、什么都没有**的破面板（只剩图标浮在桌面上）。宁可不透明，也不要破观感。
+        /// </summary>
+        public static bool ApplyBackdrop(Form f, bool acrylic)
         {
-            if (f == null || !f.IsHandleCreated) return;
+            if (f == null || !f.IsHandleCreated) return false;
             try
             {
                 if (!acrylic)
                 {
                     f.BackColor = BgBottom;
                     f.TransparencyKey = Color.Empty;
-                    return;
+                    return false;
                 }
 
                 // Windows 的模糊只能生效在「透明像素」上：把整个窗体底色设成同一个 key 色，
@@ -236,20 +241,31 @@ namespace BreadLauncher
                 {
                     Marshal.StructureToPtr(policy, data.Data, false);
                     int hr = SetWindowCompositionAttribute(f.Handle, ref data);
-                    if (hr == 0)
+                    bool ok = (hr == 0);
+                    if (!ok)
                     {
                         // 老系统不支持亚克力时退回普通的模糊
                         policy.AccentState = ACCENT_ENABLE_BLURBEHIND;
                         Marshal.StructureToPtr(policy, data.Data, false);
-                        SetWindowCompositionAttribute(f.Handle, ref data);
+                        ok = (SetWindowCompositionAttribute(f.Handle, ref data) == 0);
                     }
+                    if (ok) return true;
+                    // ★两种都不支持：把"挖空"撤回来，改成不透明面板 —— 别留一个全透明的破壳子
+                    f.BackColor = BgBottom;
+                    f.TransparencyKey = Color.Empty;
+                    return false;
                 }
                 finally
                 {
                     Marshal.FreeHGlobal(data.Data);
                 }
             }
-            catch { }
+            catch
+            {
+                // 出异常也退回不透明（宁可不好看，也不要透明的破窗口）
+                try { f.BackColor = BgBottom; f.TransparencyKey = Color.Empty; } catch { }
+                return false;
+            }
         }
 
         // ---------------- 图标取不到时的「首字母色块」 ----------------
