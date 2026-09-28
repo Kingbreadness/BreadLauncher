@@ -50,6 +50,41 @@ namespace BreadLauncher
             Say("工作目录：" + Program.AppDir);
             Say("配置：" + (settingsFile == null ? "(默认 settings.json)" : settingsFile) + "   组序号=" + groupIndex);
 
+            // ---------- 0) 启动位置 / 第一帧 ----------
+            // 用户 2026-09-28 报：「每次打开这个，左上角都会弹窗然后消失」。
+            // 真机实测（DPI 感知的窗口轮询，物理像素，3 次全部复现）：修复前窗口在 t≈120ms 以
+            // **默认 300x300** 出现在屏幕左上角 (0,0)，t≈232ms 才变成存档尺寸（仍在 (0,0)），
+            // t≈280ms 才被 PositionWindow 搬到存档位置 —— 左上角整整停了 160~190ms，肉眼可见。
+            // 两个成因，下面一条钉一个，缺哪个都会复发：
+            //   ① 构造函数里就得把窗口摆在存档位置上（StartPosition=Manual 且不设 Location → 只能是 (0,0)）；
+            //   ② 建句柄那条路（OnHandleCreated → PinTopMost）**不能**把窗口显示出来
+            //      —— 老写法 flags 里带 SWP_SHOWWINDOW，等于在窗口还没摆好位置时强行 ShowWindow。
+            try
+            {
+                string cfgPath = Path.Combine(Program.AppDir, "probe-firstframe.json");
+                File.WriteAllText(cfgPath,
+                    "{\"Groups\":[],\"Pinned\":[],\"Seeded\":true,\"PanelX\":1234,\"PanelY\":567,\"PanelW\":480,\"PanelH\":360}",
+                    new UTF8Encoding(false));
+
+                MainForm ff = new MainForm(cfgPath);
+                Check(ff.Location.X == 1234 && ff.Location.Y == 567,
+                    "构造函数里窗口就摆在存档位置上（实测 " + ff.Location.X + "," + ff.Location.Y +
+                    "，期望 1234,567）—— 不摆的话第一帧会出现在屏幕左上角 (0,0)，就是用户报的那个闪窗");
+                Check(ff.Width == 480 && ff.Height == 360,
+                    "构造函数里尺寸也是存档值（实测 " + ff.Width + "x" + ff.Height + "，期望 480x360）");
+
+                // ★这里**故意没有**「建句柄不能把窗口显示出来」那条断言：实测证明它没有鉴别力
+                //   （把 OnHandleCreated 改回带 SWP_SHOWWINDOW 的写法，它照样 PASS —— 因为窗口真正被
+                //   显示是 WinForms 在 OnLoad 链路里做的，跟这个 flag 无关）。删掉它，别留恒真断言。
+                //   真实时序只有外部轮询能量到（`popup-flash\flashwatch.exe`，见交接文档）。
+                ff.Dispose();
+                try { File.Delete(cfgPath); } catch { }
+            }
+            catch (Exception ex)
+            {
+                Check(false, "启动位置那两条断言自己抛异常：" + ex.Message);
+            }
+
             MainForm f = new MainForm(settingsFile);
             f.PreviewMode = true;      // 屏幕外、不写配置、不抢焦点
             f.ShowInTaskbar = false;

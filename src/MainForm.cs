@@ -349,6 +349,19 @@ namespace BreadLauncher
             ConfigStore.LastReadError = null;
             _icons = new IconService(Program.AppDir);
 
+            // ★★第一帧就必须出现在正确的位置上。不设这两行的话，窗口会以默认的 (0,0)（= 屏幕左上角）
+            //   被创建出来，而真正的位置要等 OnLoad → PositionWindow() 才摆上去 —— 于是「左上角闪一下再跳过来」
+            //   （用户 2026-09-28 报的「每次打开左上角都会弹窗然后消失」）。
+            //   这里用的是和 OnLoad 完全相同的那份存档值，等价、不会多一次缩放；
+            //   Location 是屏幕绝对像素，不需要按 DPI 换算。
+            if (_settings != null)
+            {
+                if (_settings.PanelW > 0 && _settings.PanelH > 0)
+                    Size = new Size(_settings.PanelW, _settings.PanelH);
+                if (_settings.PanelX >= 0 && _settings.PanelY >= 0)
+                    Location = new Point(_settings.PanelX, _settings.PanelY);
+            }
+
             BuildUi();
         }
 
@@ -1392,7 +1405,10 @@ namespace BreadLauncher
             base.OnHandleCreated(e);
             // TransparencyKey / 亚克力会让 WinForms 重建窗口句柄，重建后样式全丢 ——
             // 所以每次句柄创建都重新钉一次置顶（预览模式不动窗，跳过）。
-            if (PreviewMode == false) PinTopMost();
+            // ★这里**不许**顺带 ShowWindow（PinTopMost(false)）：句柄第一次创建、以及亚克力改
+            //   TransparencyKey 触发的那次重建，都发生在 OnLoad 摆位置**之前**，那时窗口还在默认的
+            //   (0,0)。带上 SWP_SHOWWINDOW 就等于「把还没摆好的窗口强行显示出来」→ 左上角闪一下。
+            if (PreviewMode == false) PinTopMost(false);
         }
 
         protected override void OnShown(EventArgs e)
@@ -1414,10 +1430,22 @@ namespace BreadLauncher
         private const uint SWP_NOACTIVATE = 0x0010;
         private const uint SWP_SHOWWINDOW = 0x0040;
 
-        /// <summary>把面板钉在最前面（用户要求「主动置顶」）。</summary>
+        /// <summary>把面板钉在最前面（用户要求「主动置顶」）。allowShow=false 时不带 SWP_SHOWWINDOW。</summary>
+        /// <remarks>
+        /// ★`SWP_SHOWWINDOW` 会把窗口**强行显示出来**，所以它只能在「窗口本来就该可见」的时机用（OnShown）。
+        /// 句柄创建的时机（OnHandleCreated，含亚克力改 TransparencyKey 引起的那次重建）窗口还没摆好位置，
+        /// 带上它就是「左上角闪一下」的直接原因之一（用户 2026-09-28 报的那条）。
+        /// </remarks>
         private void PinTopMost()
         {
-            try { SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW); }
+            PinTopMost(true);
+        }
+
+        private void PinTopMost(bool allowShow)
+        {
+            uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+            if (allowShow) flags |= SWP_SHOWWINDOW;
+            try { SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, flags); }
             catch (Exception) { }
         }
 
@@ -2443,7 +2471,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.5\n\n" +
+                    "BreadLauncher 1.6\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
