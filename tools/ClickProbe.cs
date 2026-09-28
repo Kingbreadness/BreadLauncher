@@ -76,7 +76,7 @@ namespace BreadLauncher
                 // ★这里**故意没有**「建句柄不能把窗口显示出来」那条断言：实测证明它没有鉴别力
                 //   （把 OnHandleCreated 改回带 SWP_SHOWWINDOW 的写法，它照样 PASS —— 因为窗口真正被
                 //   显示是 WinForms 在 OnLoad 链路里做的，跟这个 flag 无关）。删掉它，别留恒真断言。
-                //   真实时序只有外部轮询能量到（`popup-flash\flashwatch.exe`，见交接文档）。
+                //   真实时序只有外部轮询窗口矩形才量得到（探针进程内量不出「第一次可见」，见 AGENTS.md 坑 44）。
                 ff.Dispose();
                 try { File.Delete(cfgPath); } catch { }
             }
