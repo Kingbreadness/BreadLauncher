@@ -12,7 +12,10 @@ BreadLauncher\
 ├─ src\                   全部源码（见下表）
 ├─ tools\                 开发 / 自检工具（5 个 .cs，不随成品发布）
 │   ├─ MakeIcon.cs        图标生成器（生成 assets\BreadLauncher.ico；配色也在这里改）
-│   ├─ ClickProbe.cs      自检探针（源码里 111 处 `Check(...)` 调用点，跑一份配置实际执行 42~87 条：分页、命中、框选、拖排序、滚动条、右键菜单、来源筛选、显示名、鼠标穿透…）→ build\clickprobe.exe
+│   ├─ ClickProbe.cs      自检探针（分页、命中、框选、拖排序、滚动条、右键菜单、来源筛选、显示名、鼠标穿透…）→ build\clickprobe.exe
+│   │                     ★**别在这里写死「多少处 `Check(...)`」「跑多少条断言」**：改一次代码就变，写死了必然过期
+│   │                     （想看就现场数：`(Select-String -Path tools\ClickProbe.cs -Pattern 'Check\(|CheckIf\(' -AllMatches).Count`；
+│   │                     实际跑到的条数以 `build\clickprobe-report.txt` 末尾的「跳过汇总」为准 —— 0 FAIL ≠ 都测过了）
 │   ├─ AppsProbe.cs       按名字打印 AppsFolder 条目的 ExtendedProperty（查 TargetParsingPath 用）
 │   ├─ IconProbe.cs       取图标探针（对比各种取图方式）
 │   └─ IcoCheck.cs        拆开 .ico 的每帧 + 各取法的「噪声分」（查彩色乱码图标用）
@@ -38,7 +41,7 @@ BreadLauncher\
 | 文件 | 职责 |
 |---|---|
 | `Program.cs` | 入口、单实例、全部自检模式 |
-| `MainForm.cs` | 面板窗体：大文件夹布局与**组内分页**、**面板搬动 / 缩放**、**拖动分组换位**、命中测试、启动、四套右键菜单、落盘 |
+| `MainForm.cs` | 面板窗体：大文件夹布局与**组内分页**、**面板搬动 / 缩放**、**拖动分组换位**、命中测试、启动、**三套右键菜单**（格子上的整合菜单 / 面板空白 / 左下角设置）、落盘 |
 | `GroupAppsForm.cs` | 「查看全部」窗口：整组列表、单击启动、右键移除 |
 | `Dialogs.cs` | 三个深色对话框：`TextPromptForm`（新建 / 重命名分组 / 输入扫描路径）、`AppPickerForm`（**勾选式多选**添加应用，带筛选框 + **「来源」菜单**（全部 / 桌面 / 自定义文件夹 / 管理自定义文件夹…）+ 右键重命名 / 名字常驻）、`ScanFoldersForm`（管理自定义扫描文件夹） |
 | `Controls.cs` | 自绘控件：`FlatButton`、`AllAppsList`（列表 + 勾选框 + 「桌面」/「新增」小标签 + 手画滚动条）、深色菜单渲染器 |

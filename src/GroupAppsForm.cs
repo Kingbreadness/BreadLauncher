@@ -149,6 +149,16 @@ namespace BreadLauncher
             Rebuild();
         }
 
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            // ★★和 AppPickerForm 同一条规矩：「600ms 防误关」的计时必须**从窗口真的出现算起**，
+            //   不能只靠构造函数那一次赋值 —— 构造到显示之间可能隔着几百毫秒（排图标更久），
+            //   那时守卫早就过期了，排队里的一条失焦消息就能把用户还没看见的窗口当场关掉。
+            //   （2026-09-28 查探针「添加应用」断言整段丢失时发现的同族问题，两处一起修。）
+            _shownAt = DateTime.Now;
+        }
+
         private void Rebuild()
         {
             _list.SetEntries(_apps, false, false, true);   // keepOffset：拖完顺序 / 移除一条之后别跳回顶部

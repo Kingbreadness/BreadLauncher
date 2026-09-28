@@ -440,15 +440,11 @@ namespace BreadLauncher
             Theme.ApplyRoundedCorners(this);
             _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);   // 返回值 = 实际生效没有
 
-            // ★亚克力是**默认开启**的，而它有个反直觉的代价（空白处鼠标穿透）—— 头一次打开时提示一下，
-            //   否则新用户会以为「滚轮滚到别的窗口去了」是 bug。只提示一次；预览/自检模式必须跳过，
-            //   不然自动化出图会被模态框卡住。
-            if (PreviewMode == false && _settings.Acrylic && _settings.AcrylicHintShown == false)
-            {
-                _settings.AcrylicHintShown = true;
-                PersistSettings();
-                BeginInvoke((MethodInvoker)delegate { ShowAcrylicHint(); });
-            }
+            // ★★启动时**不许弹任何提示**（用户 2026-09-28 明确要求：第一眼就弹窗很烦，
+            //   「用户用的时候自行接纳就是了」）。以前这里有一次性的「亚克力已开启」提示框，
+            //   已经**整条拆掉**（`ShowAcrylicHint` 方法也删了，别再加回来）。
+            //   亚克力的代价（空白处鼠标穿透）本来就写在设置菜单那一行字里：
+            //   「亚克力半透明（空白处会穿透鼠标）：已开启」，不需要再弹窗重复一遍。
 
             _shownAt = DateTime.Now;
             TopMost = true;   // 构造期设过，但窗口创建/定位之后会被吃掉一次，这里再钉一遍
@@ -1326,10 +1322,12 @@ namespace BreadLauncher
                     }
                     else
                     {
+                        // ★应用菜单和文件夹菜单已经**整合成一个**（见 ShowTileMenu / FillTileMenu）：
+                        //   点中小图标 → 多一段「那个应用」；没点中 → 只有文件夹那段。
+                        //   以前这里是 if (mini != null) ShowEntryMenu(...) else ShowGroupMenu(...) 两套菜单，
+                        //   而小图标才二十来像素，差几像素就换一套 —— 用户抱怨「文件夹和应用不太好分别点」。
                         GroupView gv = _groups[index];
-                        AppEntry mini = AppAt(gv, slot);
-                        if (mini != null) ShowEntryMenu(gv, mini);
-                        else ShowGroupMenu(gv);
+                        ShowTileMenu(gv, AppAt(gv, slot));
                     }
                     return;
                 }
@@ -2108,22 +2106,48 @@ namespace BreadLauncher
             finally { _modalOpen = false; }
         }
 
-        /// <summary>自检用：和右键弹出的**同源**菜单副本（不用真的弹窗）。</summary>
-        internal ContextMenuStrip BuildEntryMenu(GroupView gv, AppEntry en)
+        /// <summary>自检用：和右键弹出的**同源**菜单副本（不用真的弹窗）。en = null 表示点的是文件夹背景。</summary>
+        internal ContextMenuStrip BuildTileMenu(GroupView gv, AppEntry en)
         {
             ContextMenuStrip menu = NewMenu(false);
-            FillEntryMenu(menu, gv, en);
+            FillTileMenu(menu, gv, en);
             return menu;
         }
 
-        private void ShowEntryMenu(GroupView gv, AppEntry en)
+        /// <summary>
+        /// 菜单里的「小节标题」：**不可点、灰字、加粗**，用来把菜单分成一整块一整块。
+        /// ★用户 2026-09-28 明确要求：块与块之间**不要横线**（线多了容易看串哪一条属于哪一块），
+        ///   靠标题本身分块 —— 所以标题**上面**要多留一点空隙，视觉上它才属于**下面**那一块。
+        /// ★★这里踩过一次坑（子智能体 F 量出来的）：**别用 `Padding`** —— 标题文字是贴着 item 顶边画的，
+        ///   `Padding.Top` 加出来的空白会落在文字**下面**，结果变成「标题紧贴上一块、离自己那块远」，
+        ///   正好是反的（实测：普通项间距 12px，标题下方 19px）。改用 `Margin`：它在 item **外面**，
+        ///   加出来的才是标题上方的空隙。改这段必须出图再量一次（见 `build\menu-tile-app.png`）。
+        /// </summary>
+        private ToolStripMenuItem HeaderItem(string text, bool gapAbove)
         {
-            if (en == null || gv == null) return;
+            // '&' 在菜单里是助记符（AT&amp;T 会显示成 ATT），标题里如实显示要写成 '&&'
+            ToolStripMenuItem it = new ToolStripMenuItem((text ?? "").Replace("&", "&&"));
+            it.Enabled = false;                                        // 点不动；渲染器把不可点的画成 Theme.TextDim
+            it.Font = Theme.Ui(9.75f, FontStyle.Bold);                 // Theme.Ui 有缓存，不会漏字体
+            it.Margin = new Padding(0, Theme.Px(this, gapAbove ? 8 : 3), 0, 0);
+            return it;
+        }
+
+        /// <summary>
+        /// 跳出一个文件夹格子上的右键菜单。**应用和文件夹共用这一个**（用户 2026-09-28 要求整合）：
+        /// 以前是「点中小图标 → 应用菜单 / 差几像素没点中 → 文件夹菜单」两套，而小图标才二十来像素，
+        /// 差一点点就换一套菜单，用户抱怨「文件夹和应用不太好分别点」。
+        /// 现在：点中图标 → 菜单里多一段「那个应用」；没点中 → 只有文件夹那段。
+        /// **两种情况下文件夹操作都拿得到**，不用再瞄准。
+        /// </summary>
+        private void ShowTileMenu(GroupView gv, AppEntry en)
+        {
+            if (gv == null) return;
             _suppressDeactivate = true;
             try
             {
                 ContextMenuStrip menu = NewMenu(false);
-                FillEntryMenu(menu, gv, en);
+                FillTileMenu(menu, gv, en);
                 menu.Closed += delegate { _suppressDeactivate = false; };
                 KeepMenu(menu);
                 menu.Show(this, PointToClient(Cursor.Position));
@@ -2134,16 +2158,29 @@ namespace BreadLauncher
             }
         }
 
-        /// <summary>小图标右键菜单的内容（抽出来给自检断言；用户看到的就是这些）。</summary>
-        private void FillEntryMenu(ContextMenuStrip menu, GroupView gv, AppEntry en)
+        /// <summary>
+        /// 菜单内容（抽出来给自检断言；用户看到的就是这些）。**一整块一整块，块内不插横线**：
+        ///   ① 应用块 —— 只有点中小图标才有，标题就是那个应用的名字；
+        ///   ② 文件夹块 —— 永远都有，标题是「组名」文件夹；
+        ///   ③ 面板块 —— 永远都有，放全局动作（刷新应用列表），用户要求「别专门跑到设置里去找」。
+        /// </summary>
+        private void FillTileMenu(ContextMenuStrip menu, GroupView gv, AppEntry en)
         {
-            if (en == null || gv == null) return;
+            if (gv == null) return;
+
+            // ---------- ① 应用块 ----------
+            if (en != null)
             {
                 GroupView owner = gv;
                 AppEntry entry = en;
+                menu.Items.Add(HeaderItem(entry.DisplayName, false));
+
                 menu.Items.Add("从「" + gv.Name + "」移除", null, delegate { RemoveFromGroup(owner, entry); });
 
                 ToolStripMenuItem move = new ToolStripMenuItem("移到其他分组");
+                // ★「新建分组…」放**最前面**（子智能体 H 指出）：子菜单是扁平列表、长了会被顶到屏幕外，
+                //   垫底的那个最先看不见 —— 而它是「这个应用不属于任何一个已有分组」时唯一的出路。
+                move.DropDownItems.Add("新建分组…", null, delegate { MoveToNewGroup(entry); });
                 bool anyOther = false;
                 foreach (GroupView other in _groups)
                 {
@@ -2152,23 +2189,41 @@ namespace BreadLauncher
                     move.DropDownItems.Add(other.Name, null, delegate { MoveToGroup(target.Group, entry); });
                     anyOther = true;
                 }
+                // 这条分隔线在**子菜单里面**（把「新建分组…」和「现有分组」分开），跟主菜单的「分块不画线」无关
                 if (anyOther) move.DropDownItems.Add(new ToolStripSeparator());
-                move.DropDownItems.Add("新建分组…", null, delegate { MoveToNewGroup(entry); });
                 menu.Items.Add(move);
 
-                menu.Items.Add(new ToolStripSeparator());
-                ToolStripMenuItem labelItem = new ToolStripMenuItem("名字常驻显示（画在图标下）");
+                // ★文字里要写清**当前状态**：这个菜单没有勾选框的边距（`NewMenu(false)` → `ShowImageMargin=false`），
+                //   `Checked` 属性其实**画不出来**（子智能体 H 逐像素验过：一个像素都不画）。
+                //   所以按项目一贯的规矩「开关 = 文字写明已开启/已关闭」，别让人靠猜。
+                ToolStripMenuItem labelItem = new ToolStripMenuItem(
+                    "名字常驻显示（画在图标下）：" + (entry.ShowName ? "已开启" : "已关闭"));
                 labelItem.Checked = entry.ShowName;
                 labelItem.Click += delegate { SetNameLabel(entry, !entry.ShowName); };
                 menu.Items.Add(labelItem);
+
                 menu.Items.Add("重命名…", null, delegate { RenameEntry(entry); });
                 if (string.IsNullOrEmpty(entry.CustomName) == false)
                     menu.Items.Add("恢复原名（" + entry.Name + "）", null, delegate { SetDisplayName(entry, null); });
-                menu.Items.Add(new ToolStripSeparator());
-                if (en.IsRealFile)
+                if (entry.IsRealFile)
                     menu.Items.Add("打开文件所在位置", null, delegate { OpenFileLocation(entry); });
                 menu.Items.Add("复制显示名", null, delegate { CopyText(entry.DisplayName); });
             }
+
+            // ---------- ② 文件夹块 ----------
+            menu.Items.Add(HeaderItem("「" + gv.Name + "」文件夹", en != null));
+            GroupView g = gv;
+            menu.Items.Add("添加应用…", null, delegate { OpenPicker(g); });
+            if (gv.Apps.Count > 0)
+                menu.Items.Add("查看全部（" + gv.Apps.Count + "）…", null, delegate { ShowAllApps(g); });
+            menu.Items.Add("重命名分组…", null, delegate { RenameGroup(g); });
+            menu.Items.Add("左移一位", null, delegate { MoveGroup(g, -1); });
+            menu.Items.Add("右移一位", null, delegate { MoveGroup(g, 1); });
+            menu.Items.Add("删除分组", null, delegate { DeleteGroup(g); });   // 里面自带确认框
+
+            // ---------- ③ 面板块（全局动作）----------
+            menu.Items.Add(HeaderItem("面板", true));
+            menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
         }
 
         /// <summary>
@@ -2204,35 +2259,6 @@ namespace BreadLauncher
             name = name.Trim();
             if (string.Equals(name, now, StringComparison.Ordinal)) return;   // 没变
             SetDisplayName(en, string.Equals(name, en.Name, StringComparison.Ordinal) ? null : name);
-        }
-
-        private void ShowGroupMenu(GroupView gv)
-        {
-            if (gv == null) return;
-            _suppressDeactivate = true;
-            try
-            {
-                ContextMenuStrip menu = NewMenu(false);
-
-                GroupView owner = gv;
-                menu.Items.Add("添加应用…", null, delegate { OpenPicker(owner); });
-                if (gv.Apps.Count > 0)
-                    menu.Items.Add("查看全部（" + gv.Apps.Count + "）…", null, delegate { ShowAllApps(owner); });
-                menu.Items.Add("重命名分组…", null, delegate { RenameGroup(owner); });
-                menu.Items.Add(new ToolStripSeparator());
-                menu.Items.Add("左移一位", null, delegate { MoveGroup(owner, -1); });
-                menu.Items.Add("右移一位", null, delegate { MoveGroup(owner, 1); });
-                menu.Items.Add(new ToolStripSeparator());
-                menu.Items.Add("删除分组", null, delegate { DeleteGroup(owner); });
-
-                menu.Closed += delegate { _suppressDeactivate = false; };
-                KeepMenu(menu);
-                menu.Show(this, PointToClient(Cursor.Position));
-            }
-            catch (Exception)
-            {
-                _suppressDeactivate = false;
-            }
         }
 
         /// <summary>
@@ -2326,7 +2352,13 @@ namespace BreadLauncher
             menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
             // ★这三条是开关：**打勾 = 当前状态**，文字也写清「已开启 / 已关闭」。
             //   以前写的是「亚克力半透明：关」=「点一下会关掉」——用户反馈分不清是状态还是动作（容易弄混）。
-            menu.Items.Add(ToggleItem("亚克力半透明（空白处会穿透鼠标）", _settings.Acrylic, delegate { ToggleAcrylic(); }));
+            // ★亚克力那条的文字还要**如实**：系统不支持时面板其实是不透明的（`_acrylicActive=false`），
+            //   那时候还写「空白处会穿透鼠标」就是假话 —— 换成「这台系统不支持」。
+            //   这种情况以前是弹一个说明框，用户 2026-09-28 要求：**不弹窗**，写进菜单文字里就行。
+            string acrylicLabel = (_settings.Acrylic && _acrylicActive == false)
+                ? "亚克力半透明（这台系统不支持，面板保持不透明）"
+                : "亚克力半透明（空白处会穿透鼠标）";
+            menu.Items.Add(ToggleItem(acrylicLabel, _settings.Acrylic, delegate { ToggleAcrylic(); }));
             menu.Items.Add(ToggleItem("鼠标悬停显示名字", _settings.HoverNames, delegate { ToggleHoverNames(); }));
             menu.Items.Add(ToggleItem("启动应用后关闭面板", _settings.CloseAfterLaunch, delegate { ToggleCloseAfterLaunch(); }));
 
@@ -2394,48 +2426,17 @@ namespace BreadLauncher
             Invalidate();
         }
 
-        /// <summary>打开亚克力时的**一次性提示**：说清"好看的代价"是空白处鼠标穿透，以及怎么避开。
-        /// 只在**打开**的时候提示（关掉不用解释）。</summary>
-        private void ShowAcrylicHint()
-        {
-            try
-            {
-                _modalOpen = true;
-                MessageBox.Show(this,
-                    "亚克力半透明已开启 —— 面板空白处（文件夹之间、四周留白）会透出桌面，看起来更通透。"
-                    + "\n\n代价：**那一块的滚轮和点击会漏给下面的窗口**（容易误触）。"
-                    + "\n\n不想被穿透就在设置里把「亚克力半透明」关掉 —— 面板变成不透明窗口，就完全不穿透了。",
-                    "BreadLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception) { }
-            finally { _modalOpen = false; }
-        }
-
         private void ToggleAcrylic()
         {
             _settings.Acrylic = !_settings.Acrylic;
             PersistSettings();
             _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);
             Invalidate(true);
-            // 打开亚克力就讲一次代价（用户要求：只留提示）。
-            // ★系统不支持时要说实话 —— 别说"已开启、会透出桌面"，那会让人以为坏了。
-            if (_settings.Acrylic && _acrylicActive) ShowAcrylicHint();
-            else if (_settings.Acrylic && _acrylicActive == false) ShowAcrylicUnsupportedHint();
-        }
-
-        /// <summary>系统既不支持亚克力也不支持模糊时的说明（此时面板保持不透明，比全透明的空壳子好）。</summary>
-        private void ShowAcrylicUnsupportedHint()
-        {
-            try
-            {
-                _modalOpen = true;
-                MessageBox.Show(this,
-                    "这台系统的「亚克力 / 模糊」接口都不可用，所以面板**保持不透明**（比留一个全透明的空壳子好）。"
-                    + "\n\n开关状态记下了：换到支持的 Windows（Win10 1803+ / Win11）上再打开，效果就会出来。",
-                    "BreadLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception) { }
-            finally { _modalOpen = false; }
+            // ★★用户 2026-09-28 明确要求：**亚克力相关的提示框全部删掉** —— 启动时不弹、手动开关时也不弹
+            //   （「用户用的时候自行接纳就是了」）。代价写在设置菜单那一行字里：
+            //   「亚克力半透明（空白处会穿透鼠标）：已开启」；
+            //   「这台系统不支持」也不再弹窗，改成**菜单文字如实显示**（见 FillSettingsMenu 里那段）。
+            //   别再加回任何 MessageBox。
         }
 
         private void ClearIcons()
@@ -2471,7 +2472,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.6\n\n" +
+                    "BreadLauncher 1.7\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

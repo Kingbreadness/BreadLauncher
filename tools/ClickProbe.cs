@@ -946,17 +946,24 @@ namespace BreadLauncher
                 MethodInfo openPicker = typeof(MainForm).GetMethod("OpenPicker", BindingFlags.NonPublic | BindingFlags.Instance);
                 openPicker.Invoke(f, new object[] { gv });
                 t2.Stop();
-                // ★前提：候选得真的够 3 条。上面那个 else 分支已经说了"不足就跳过"，但原来这两条断言照样跑 →
-                //   换成只有 1 组 / 空组的小配置时会假失败（gained 保持 -1 就表示那段没跑）。
-                CheckIf(gained[0] >= 0, "候选不足 3 个（这组才 " + gv.Apps.Count + " 个应用），跳过「连加多个」检查",
+                // ★前提：那段断言得真的跑过（gained 保持 -1 就表示一次都没进去）。
+                // ★★跳过的**理由要说真话**（2026-09-28 修）：以前这里写「候选不足 3 个」是**假理由** ——
+                //   实测那次候选有 168 个，真相是 `AppPickerForm` 在探针第一次 Tick 之前就自己关了
+                //   （它失焦会关窗，见 Dialogs.cs 的 OnDeactivate；那次根因是「600ms 防误关」从构造起算，
+                //   窗口还没出现守卫就过期了 —— 产品侧已修：改成 OnShown 起算）。
+                //   把假理由写进报告，等于把「26 条断言没跑」伪装成「配置太小」，是最危险的那种失真。
+                string pickerWhy = "「添加应用」窗口没跑到探针的计时器里（没开出来，或者开出来又被失焦关掉了）";
+                CheckIf(gained[0] >= 0, pickerWhy,
                     gained[0] == 3,
                     "「添加应用」勾选 3 个 → 点一次「添加」→ 组内 key " + beforeAdd + " → " + gv.Group.Keys.Count + "（窗口不关，加过的从候选里消失）");
-                CheckIf(gained[1] >= 0, "同上：候选不足 3 个，跳过",
+                CheckIf(gained[1] >= 0, pickerWhy,
                     gained[1] == 3,
                     "真实点击三行 → 打钩数 = " + gained[1] + "（走的是 AllAppsList.OnMouseUp → CheckedChanged → 标题/按钮实时更新）");
             }
             else
             {
+                // 这里也要进「跳过汇总」：只 Say 不记，报告末尾就看不到它是被跳过的（候选真的不足 3 个时）
+                NoteSkip("候选真的不足 3 个（这份配置里能加的应用太少）");
                 Say("（候选不足 3 个，跳过「连加多个」检查）");
             }
 
@@ -1336,13 +1343,68 @@ namespace BreadLauncher
                 AppEntry nameTarget = gv.Apps.Count > 0 ? gv.Apps[0] : null;
                 if (nameTarget != null)
                 {
-                    // ① 面板右键菜单里必须有「重命名…」（同源副本，不用真弹窗）
-                    ContextMenuStrip pm = f.BuildEntryMenu(gv, nameTarget);
+                    // ① 面板右键菜单：**应用和文件夹整合成一个**（用户 2026-09-28 要求），
+                    //    点中小图标时两段都要在，且**块内不许有分隔线**（靠灰色标题分块）。
+                    ContextMenuStrip pm = f.BuildTileMenu(gv, nameTarget);
                     string ptexts = "";
-                    for (int i = 0; i < pm.Items.Count; i++) ptexts += pm.Items[i].Text + " | ";
+                    int seps = 0;
+                    for (int i = 0; i < pm.Items.Count; i++)
+                    {
+                        ptexts += pm.Items[i].Text + " | ";
+                        if (pm.Items[i] is ToolStripSeparator) seps++;
+                    }
                     Check(ptexts.IndexOf("重命名") >= 0 && ptexts.IndexOf("复制显示名") >= 0,
                         "面板小图标右键菜单里有「重命名…」与「复制显示名」（" + ptexts + "）");
+                    Check(ptexts.IndexOf("添加应用") >= 0 && ptexts.IndexOf("删除分组") >= 0,
+                        "★点中小图标时，**同一个菜单里也有整个文件夹的操作**（添加应用 / 删除分组）—— 不用再瞄准小图标");
+                    Check(seps == 0, "★整合后的菜单里一条分隔线都没有（实测 " + seps + " 条）—— 用户要求「一整块一整块」，靠灰色标题分块");
+                    Check(pm.Items.Count > 0 && pm.Items[0].Enabled == false && pm.Items[0].Text == nameTarget.DisplayName,
+                        "菜单第一项是**不可点的标题**（实测「" + pm.Items[0].Text + "」，Enabled=" + pm.Items[0].Enabled + "）");
+                    // ★「不可点的项」必须**恰好只有那三个标题**（应用 / 文件夹 / 面板）—— 只查第一项的话，
+                    //   万一有人把一大片项都禁用了也照样 PASS（子智能体 F 指出的断言边界）。
+                    int disabled = 0;
+                    for (int i = 0; i < pm.Items.Count; i++) if (pm.Items[i].Enabled == false) disabled++;
+                    Check(disabled == 3,
+                        "不可点的项**只有 3 个标题**（实测 " + disabled + " 个）—— 除标题外每一项都得能点");
+                    Check(ptexts.IndexOf("刷新应用列表") >= 0,
+                        "「刷新应用列表」也在这个菜单里（用户要求：别专门跑到设置里找）");
+                    // 「名字常驻显示」这个开关**画不出勾**（菜单没有勾选框边距），所以状态必须写在文字里
+                    Check(ptexts.IndexOf("名字常驻显示（画在图标下）：已开启") >= 0
+                          || ptexts.IndexOf("名字常驻显示（画在图标下）：已关闭") >= 0,
+                        "「名字常驻显示」的文字写明了**当前状态**（画不出勾，只能靠文字：" + ptexts.Substring(0, Math.Min(60, ptexts.Length)) + "…）");
+                    // 没点中图标时（en = null）：只有文件夹那段，不许出现应用专属项
+                    ContextMenuStrip pmNo = f.BuildTileMenu(gv, null);
+                    string noTexts = "";
+                    for (int i = 0; i < pmNo.Items.Count; i++) noTexts += pmNo.Items[i].Text + " | ";
+                    Check(noTexts.IndexOf("添加应用") >= 0 && noTexts.IndexOf("从「") < 0 && noTexts.IndexOf("复制显示名") < 0,
+                        "点文件夹背景（没点中图标）时：文件夹操作照样有、应用专属项不出现（" + noTexts + "）");
+                    pmNo.Dispose();
                     pm.Dispose();
+
+                    // ①b 把两种菜单真的弹出来各截一张图（「画面改动必须出图看」：文本断言过了，
+                    //     但「一整块一整块」到底长什么样、标题够不够显眼，只能看）。
+                    foreach (int withApp in new int[] { 1, 0 })
+                    {
+                        ContextMenuStrip shotMenu = f.BuildTileMenu(gv, withApp == 1 ? nameTarget : null);
+                        try
+                        {
+                            shotMenu.Show(f, new Point(Theme.Px(f, 40), Theme.Px(f, 60)));
+                            Application.DoEvents();
+                            System.Threading.Thread.Sleep(120);
+                            Application.DoEvents();
+                            using (Bitmap b = new Bitmap(Math.Max(1, shotMenu.Width), Math.Max(1, shotMenu.Height)))
+                            {
+                                shotMenu.DrawToBitmap(b, new Rectangle(0, 0, b.Width, b.Height));
+                                b.Save(Path.Combine(Program.AppDir, withApp == 1 ? "menu-tile-app.png" : "menu-tile-folder.png"),
+                                    System.Drawing.Imaging.ImageFormat.Png);
+                            }
+                            Say("      右键菜单截图（" + (withApp == 1 ? "点中应用" : "点在文件夹背景") + "）："
+                                + shotMenu.Width + "x" + shotMenu.Height + "，菜单项 " + shotMenu.Items.Count + " 个");
+                            shotMenu.Close();
+                        }
+                        catch (Exception exShotMenu) { Say("（右键菜单截图失败，不影响判定：" + exShotMenu.Message + "）"); }
+                        shotMenu.Dispose();
+                    }
 
                     // ② 改名字 → 显示名变、设置里记下、原名不动
                     string orig = nameTarget.Name;
@@ -1391,7 +1453,7 @@ namespace BreadLauncher
                     Check(true, "悬停在第一个小图标上（_hoverSlot=0）→ 出图 build\\panel-hover-name.png（名字标签）");
 
                     // ⑤ 名字常驻显示（右键 →「名字常驻显示」）：菜单项要在、开关要落进设置、能往返
-                    ContextMenuStrip pm2 = f.BuildEntryMenu(gv, nameTarget);
+                    ContextMenuStrip pm2 = f.BuildTileMenu(gv, nameTarget);
                     string ptexts2 = "";
                     for (int i = 0; i < pm2.Items.Count; i++) ptexts2 += pm2.Items[i].Text + " | ";
                     bool hasLabelItem = ptexts2.IndexOf("名字常驻") >= 0;
@@ -1490,6 +1552,19 @@ namespace BreadLauncher
                     sm.Dispose();
                     Check(acrylicOk && hoverOk && closeOk,
                         "设置菜单三个开关：打勾与文字都表示**当前状态**（" + stexts + "）");
+
+                    // ⑨ 启动时**不许弹任何提示**（用户 2026-09-28 明确要求：「第一眼有个弹窗」很烦）。
+                    //    亚克力那两条提示（「已开启」和「这台系统不支持」）连同方法一起删掉了 ——
+                    //    这里断言它们**确实不存在**，免得以后有人顺手把弹窗加回来。
+                    //    （「不支持」那种情况改成菜单文字如实显示，见 FillSettingsMenu。）
+                    MethodInfo oldHint = typeof(MainForm).GetMethod("ShowAcrylicHint",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo oldHint2 = typeof(MainForm).GetMethod("ShowAcrylicUnsupportedHint",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    Check(oldHint == null && oldHint2 == null,
+                        "亚克力的两个提示框都彻底拆掉了（反射查 ShowAcrylicHint="
+                        + (oldHint == null ? "不存在 ✓" : "★又回来了") + "、ShowAcrylicUnsupportedHint="
+                        + (oldHint2 == null ? "不存在 ✓" : "★又回来了") + "）");
 
                     // ⑩ 分组区下沿到页脚之间那条窄空白带里不许有亮笔画：
                     //    被面板下沿切掉一半的空格子如果还画加号，就会在这条带里留下"游离的加号"（用户报了两次）。

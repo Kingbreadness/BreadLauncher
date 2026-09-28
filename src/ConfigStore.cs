@@ -51,7 +51,9 @@ namespace BreadLauncher
         /// <summary>鼠标停在小图标上时是否浮出名字（设置菜单里可关；默认开）。</summary>
         public bool HoverNames = true;
 
-        /// <summary>「亚克力会影响鼠标穿透」那条提示有没有看过（只看一次，别每次启动都弹）。</summary>
+        /// <summary>★2026-09-28 起**不再使用**：用户要求启动时不许弹任何提示，那条「亚克力已开启」的一次性提示
+        /// 连同触发机制一起删掉了（`ShowAcrylicHint` 方法已不存在）。字段留着只是为了老配置反序列化不报错、
+        /// 也不会丢数据；别拿它再去做「只提示一次」的逻辑。</summary>
         public bool AcrylicHintShown = false;
 
 

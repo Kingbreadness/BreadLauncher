@@ -795,6 +795,11 @@ namespace BreadLauncher
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            // ★★「600ms 防误关」的计时**必须从窗口真的出现算起**，不能只靠构造函数那一次赋值：
+            //   构造 → 真正显示之间可能隔着几百毫秒（建列表、排图标，慢机器更久），那时守卫早就过期了，
+            //   排队里的一条失焦消息就能把**用户还没看见的**窗口当场关掉。
+            //   （2026-09-28 查探针「添加应用」那 26 条断言整段丢失，根因就是这个 —— 见 OnDeactivate 的守卫。）
+            _shownAt = DateTime.Now;
             _filter.Focus();
         }
 
