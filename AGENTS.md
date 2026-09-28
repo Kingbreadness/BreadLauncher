@@ -243,7 +243,8 @@ build\clickprobe.exe [settings.json] [组序号]
 
 ### Issue tracker
 
-待办（issues）与 spec 放在 **GitHub Issues** 里，用 `gh` CLI 读写（这个项目准备开源，外部的 bug 报告和功能请求会直接进 Issues）。见 `docs/agents/issue-tracker.md`。
+待办（issues）与 spec 放在 **GitHub Issues** 里，用 `gh` CLI 读写（项目**已开源发布**，外部的 bug 报告和功能请求会直接进 Issues）。见 `docs/agents/issue-tracker.md`。
+★ 本机的 `gh` **没有进 PATH**，要拿绝对路径调 —— 路径和配置目录见内部文件 `本机环境.md`（不随仓库发布）。
 
 ### Triage labels
 

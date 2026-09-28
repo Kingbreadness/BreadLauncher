@@ -2,7 +2,18 @@
 
 这个 repo 的 issues 和 specs 存放在 **GitHub Issues** 中（仓库的 Issues 标签页），所有操作都走 [`gh` CLI](https://cli.github.com/)。
 
-> 为什么用 GitHub：这个项目准备开源，别人报的 bug / 想要的功能会直接进 Issues；`to-tickets`、`triage`、`to-spec` 这些 skill 会从这里读取和写入。
+> 为什么用 GitHub：这个项目**已经开源发布**（v1.5 = Latest，https://github.com/Kingbreadness/BreadLauncher），别人报的 bug / 想要的功能会直接进 Issues；`to-tickets`、`triage`、`to-spec` 这些 skill 会从这里读取和写入。
+
+## ★ 本机怎么调用 gh（动手前先看这一节）
+
+**`gh` 不一定在 PATH 里 —— 本机就不在**（`Get-Command gh` 查不到）。不在 PATH 时，下面所有 `gh …` 命令都要改成用**绝对路径**调用：
+
+```powershell
+$gh = '<本机 gh.exe 的绝对路径>'
+& $gh issue list --repo Kingbreadness/BreadLauncher
+```
+
+本机的实际路径、配置目录、要不要挂代理，写在仓库根目录的 **`本机环境.md`**（**内部文件：已被 `.gitignore` 排除，不随仓库发布**）里 —— **先读它，别猜，也别把本机路径写进这个文件**（这个文件会随仓库公开）。
 
 ## Conventions
 
@@ -38,6 +49,11 @@ GitHub 的 issue 和 PR 共用一个编号空间，所以裸 `#42` 可能是两�
 ## Wayfinding operations
 
 供 `/wayfinder` 使用。**map** 是单个 issue，**child** issues 是它的 tickets。
+
+> ✅ 这 5 个 label **已经建好了**（2026-09-28，`gh label list` 可复查）：
+> `wayfinder:map` / `wayfinder:research` / `wayfinder:prototype` / `wayfinder:grilling` / `wayfinder:task`。
+> 万一在别的 fork / 新仓库里发现它们不存在，**先建再跑**（`--label` 指向不存在的 label 会失败）：
+> `& $gh label create 'wayfinder:map' --repo <owner>/<repo> --color 0e8a16 --description 'Wayfinder map issue'`
 
 - **Map**：一个带 `wayfinder:map` label 的 issue，body 里放 Notes / Decisions-so-far / Fog。`gh issue create --label wayfinder:map`
 - **Child ticket**：用 GitHub sub-issue 挂到 map 上（通过 sub-issues endpoint 走 `gh api`）。没开 sub-issues 时，把 child 加进 map body 的 task list，并在 child body 顶部写 `Part of #<map>`。Labels 用 `wayfinder:<type>`（`research` / `prototype` / `grilling` / `task`）。被 claim 之后 assign 给动手的人
