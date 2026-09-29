@@ -123,6 +123,13 @@ namespace BreadLauncher
             _dragTimer.Stop();
             ApplyDragTarget();                   // 把最后的目标落实（否则松手位置会差一点点）
             ResumeTransparencyAfterDrag();       // 恢复亚克力/透明外观
+            // ★★拖动/缩放结束后**必须把边缘高亮清掉**（用户 2026-09-28 报：「这个侧边的蓝色怎么不自己消失呢」）。
+            //   机制：`SuspendTransparencyForDrag()` 在拖动期间把 `TransparencyKey` 清空 → 面板**临时变成不透明**，
+            //   鼠标事件这才回到面板，`_hoverZone` 被点亮；松手后 `ResumeTransparencyAfterDrag()` 又把它变回
+            //   **颜色键穿透**（亚克力默认开启时，面板空白处本来就是穿透的）→ 之后鼠标再怎么动，
+            //   面板**都收不到 MouseMove/MouseLeave** → 那条边会一直亮着，直到下次把鼠标移回面板上。
+            //   ⇒ 平时"靠近边缘就高亮"其实只在**面板不透明**时生效（也就是拖动期间）；所以收尾一定要清。
+            _hoverZone = 0;
         }
 
         // 拖动期间临时关掉颜色键透明的现场
@@ -1210,13 +1217,20 @@ namespace BreadLauncher
         protected override void OnMouseLeave(EventArgs e)
         {
             _wheelAcc = 0;   // 鼠标离开窗口：翻页攒的零头一起丢掉（否则移回来接着攒，会莫名其妙多翻一页）
+            // ★★鼠标离开窗口时**边缘高亮也必须灭掉**（用户 2026-09-28 报：「这个侧边的蓝色怎么不自己消失呢，
+            //   很影响美观」）。`_hoverZone` 只在 OnMouseMove 里更新 —— 鼠标一旦贴着边离开面板，
+            //   就再也不会有 MouseMove 进来，那条蓝边会**一直亮着**。实测：鼠标在面板外 265px 处时，
+            //   左边那条 2px 蓝线仍然 706/706 个像素通高亮着（探针里有回归断言钉着这条）。
+            bool needRepaint = false;
+            if (_hoverZone != 0) { _hoverZone = 0; needRepaint = true; }
             if (_hoverGroup >= 0 || _hoverSlot >= -1)
             {
                 _hoverGroup = -1;
                 _hoverSlot = -2;
                 Cursor = Cursors.Default;
-                Invalidate();
+                needRepaint = true;
             }
+            if (needRepaint) Invalidate();
             base.OnMouseLeave(e);
         }
 
@@ -2472,7 +2486,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.7\n\n" +
+                    "BreadLauncher 1.8\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

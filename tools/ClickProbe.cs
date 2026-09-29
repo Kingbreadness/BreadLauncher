@@ -1520,6 +1520,36 @@ namespace BreadLauncher
                             "裁剪区外的文字不会被画出来（Theme.DrawText 自己夹了裁剪：GDI 不认 GDI+ 的 SetClip，"
                             + "这正是「面板页脚上冒出游离加号」的根因；裁剪区外亮像素=" + bright + "）");
                     }
+                    // ⑦b 边缘高亮：贴边才亮，**鼠标离开窗口必须灭掉**
+                    //   用户 2026-09-28 报：「这个侧边的蓝色怎么不自己消失呢，很影响美观」。
+                    //   病根：`_hoverZone` 只在 OnMouseMove 里更新，鼠标贴着边离开面板后就再没人清它，
+                    //   那条 2px 蓝边会一直亮着（真机实测：鼠标在面板外 265px 处，左边那列 706/706 像素仍是蓝的）。
+                    try
+                    {
+                        FieldInfo hzF = typeof(MainForm).GetField("_hoverZone", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mvM = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo lvM = typeof(MainForm).GetMethod("OnMouseLeave", BindingFlags.NonPublic | BindingFlags.Instance);
+                        lvM.Invoke(f, new object[] { EventArgs.Empty });                    // 先归零：别受前面用例影响
+                        mvM.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, 2, f.Height / 2, 0) });
+                        int zOn = (int)hzF.GetValue(f);
+                        lvM.Invoke(f, new object[] { EventArgs.Empty });                    // 鼠标离开窗口
+                        int zOff = (int)hzF.GetValue(f);
+                        Check(zOn != 0 && zOff == 0,
+                            "鼠标贴左边缘 → 高亮那条边（_hoverZone=" + zOn + "）；**鼠标一离开就灭**（离开后 _hoverZone="
+                            + zOff + "）—— 不灭的话面板边上会永远挂着一条蓝线（用户报过的那个「不自己消失」）");
+
+                        // ★还有一条更隐蔽、也是用户实际撞上的那条路：**拖动/缩放结束**时必须清掉。
+                        //   拖动期间 `SuspendTransparencyForDrag()` 把面板临时变成不透明 → 边缘高亮就是那时候点亮的；
+                        //   松手后又变回**颜色键穿透** → 面板再也收不到 MouseMove/MouseLeave → 只能靠收尾这一刀清干净。
+                        hzF.SetValue(f, 4);                       // 假装拖的时候点亮了左边那条
+                        typeof(MainForm).GetMethod("EndDrag", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, null);
+                        int zAfterDrag = (int)hzF.GetValue(f);
+                        Check(zAfterDrag == 0,
+                            "拖动/缩放结束后边缘高亮也清掉（实测 _hoverZone=" + zAfterDrag
+                            + "）—— 不清的话，拖完面板边上就一直挂着一条蓝线，鼠标怎么移都灭不掉");
+                    }
+                    catch (Exception exEdge) { Check(false, "边缘高亮断言异常：" + exEdge.Message); }
+
                     // ⑧ 设置菜单的三个开关：**打勾 = 当前状态**，文字写「已开启 / 已关闭」
                     //   （以前是「亚克力半透明：关」=「点一下会关掉」，用户反馈分不清状态还是动作）
                     ContextMenuStrip sm = f.BuildSettingsMenu();
