@@ -26,7 +26,8 @@ BreadLauncher\
 │   ├─ verify\            独立验收留下的复现报告与原始证据（本机生成、不随仓库发布）
 │   └─ cache\             图标、应用列表缓存、日志
 ├─ README.md              用户向文档：怎么用、怎么编译、已知限制（这份目录说明在 docs\layout.md）
-├─ AGENTS.md              给下一个接手的人 / AI 的工作约定
+├─ AGENTS.md              **短入口**：三条红线 + 指向下面几份（文件名是 AI 助手的通用约定名）
+├─ docs\dev-notes.md      开发约定 / 验收标准 / 四十多条踩坑清单（原 `AGENTS.md`，2026-09-29 挪到这里并改成中性标题）
 ├─ 交接文档.md            内部交接与验收记录（含个人路径，**不随仓库发布**）
 ├─ .gitignore             挡住用户数据（settings / 缓存 / 本机测试配置）、构建产物和一次性证据
   └─ .gitattributes         统一换行（Windows 项目：全部 CRLF）、图标/截图按二进制处理
