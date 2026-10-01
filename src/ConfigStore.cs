@@ -469,13 +469,17 @@ namespace BreadLauncher
         {
             Write(CacheFile(appDir), cache);
         }
-        public static bool IsCacheStale(AppCache cache, int hours)
+        /// <summary>缓存是不是「旧了」。
+        /// ★单位是**分钟**（2026-10-01 从「小时」改过来）：启动重扫的阈值从 12 小时降到 5 分钟 ——
+        /// 「刚装的软件，下次开面板就该扫到；卸载掉的，下次开面板格子自己就该没了」。
+        /// ⚠ 参数改单位时**别只改数字**：调用点写的是 `IsCacheStale(cache, 5)`，看起来像 5 小时。</summary>
+        public static bool IsCacheStale(AppCache cache, int minutes)
         {
             if (cache == null || cache.Apps == null || cache.Apps.Count == 0) return true;
             DateTime t;
             if (!DateTime.TryParse(cache.ScannedUtc, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out t))
                 return true;
-            return (DateTime.UtcNow - t).TotalHours > hours;
+            return (DateTime.UtcNow - t).TotalMinutes > minutes;
         }
 
         // ---------------- 日志（出问题时有据可查，也能被用户一眼看到） ----------------

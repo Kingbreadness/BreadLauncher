@@ -190,6 +190,7 @@ namespace BreadLauncher
         private string _titleInfo = string.Empty;   // 标题右侧那半句「已有 N 个 · 已选 M 个」
         private FlatButton _allBtn;     // 全选（当前列出来的那些）
         private FlatButton _noneBtn;    // 全不选
+        private FlatButton _rescan;     // 重新扫描（左下角；2026-10-01 用户要求把刷新入口放进这个窗口）
         private Action<AppEntry> _onAdd;
         private bool _suppressDeactivate;   // 右键菜单 / 子对话框弹出来时压住「失去焦点自动关窗」
         private ContextMenuStrip _ctx;      // 复用的右键菜单（★在 OnFormClosed 里 Dispose，不在自己的 Closed 里）
@@ -282,6 +283,15 @@ namespace BreadLauncher
             _noneBtn.Click += delegate { _list.UncheckAll(_filtered); };   // 口径与「全选」对称：只清当前列出来的
             Controls.Add(_noneBtn);
 
+            // 「重新扫描」（左下角）：刚装完软件 / 刚在桌面建了快捷方式，列表里没有 → 点它。
+            // ★这是用户 2026-10-01 明确要求的落点：「刷新应用列表」不该待在右键菜单里，
+            //   真正需要它的时刻是**这个窗口开着的时候**（而窗口是模态的，右键根本点不动）。
+            _rescan = new FlatButton();
+            _rescan.Style = FlatButton.Look.Text;
+            _rescan.Text = "重新扫描";
+            _rescan.Click += delegate { RescanNow(); };
+            Controls.Add(_rescan);
+
             _cancel = new FlatButton();
             _cancel.Style = FlatButton.Look.IconText;
             _cancel.Glyph = "\uE8BB";
@@ -335,6 +345,9 @@ namespace BreadLauncher
             int bw = Theme.Px(this, 104);
             _ok.Bounds = new Rectangle(w - pad - bw, by, bw, bh);
             _cancel.Bounds = new Rectangle(w - pad - bw * 2 - Theme.Px(this, 6), by, bw, bh);
+            // ★「重新扫描」占左下角：这块以前是空的（提示文字在**列表正下方那条空带**里，
+            //   2026-10-01 一起挪上去的），所以**不用加宽窗口**也放得下。
+            _rescan.Bounds = new Rectangle(pad, by, bw, bh);
 
             int listY = _filterRect.Bottom + Theme.Px(this, 10);
             _list.Bounds = new Rectangle(pad, listY, w - pad * 2, Math.Max(Theme.Px(this, 80), by - Theme.Px(this, 40) - listY));
@@ -495,6 +508,46 @@ namespace BreadLauncher
             ApplyFilter();
         }
 
+        /// <summary>
+        /// 左下角「重新扫描」（2026-10-01 用户要求把刷新入口放进这个窗口）：让调用方**落盘 + 全量重扫**
+        /// （同步跑在界面线程上，本地目录两百多毫秒），拿回新的候选名单就把列表换掉 ——
+        /// 刚装的软件 / 刚在桌面建的快捷方式，点一下就出现。
+        /// ★重扫回来的是**新的一批 AppEntry 实例**：`_requested`（"这张图已经请求过"的记录）必须清掉，
+        ///   否则 IconSource 变过的条目不会再入队，绘制时会现场同步取图，候选一多就一条一条卡
+        ///   （跟 ManageFolders 里那段是同一个理由）。
+        /// ★筛选框**不清**：用户多半正拿它找那个新软件，清掉等于让人重打一遍。
+        /// </summary>
+        internal void RescanNow()
+        {
+            if (_onSourcesChanged == null || _rescan == null) return;
+            Cursor prev = Cursor;
+            string oldText = _rescan.Text;
+            _rescan.Enabled = false;
+            _rescan.Text = "扫描中…";     // 同步扫描那两百多毫秒里，至少让用户看到"在忙"
+            try
+            {
+                Cursor = Cursors.WaitCursor;
+                Application.DoEvents();
+                List<AppEntry> fresh = _onSourcesChanged();
+                if (fresh != null)
+                {
+                    _all = fresh;
+                    _requested.Clear();
+                }
+            }
+            catch (Exception ex)
+            {
+                try { ConfigStore.Log(Program.AppDir, "「重新扫描」失败：" + ex.Message); } catch (Exception) { }
+            }
+            finally
+            {
+                Cursor = prev;
+                _rescan.Text = oldText;
+                _rescan.Enabled = true;
+            }
+            ApplyFilter();      // 里面会清「幽灵勾」、重算提示、重排列表、重新请求图标
+        }
+
         private void ApplyFilter()
         {
             string q = (_filter.Text ?? string.Empty).Trim();
@@ -526,11 +579,14 @@ namespace BreadLauncher
             _ok.Enabled = _list.Checked.Count > 0;
             _hint = _filtered.Count == 0
                 ? (q.Length == 0
-                    ? (_all.Count == 0 ? "候选都加完了，点「完成」"
+                    ? (_all.Count == 0 ? "候选都加完了 —— 刚装了新软件？点左下角「重新扫描」"
                         : (_source == SrcCustom && CustomDirCount() == 0
                             ? "还没有自定义文件夹 —— 点「来源」→「管理自定义文件夹…」加一个"
                             : (_source == SrcDesktop ? "桌面上没有可添加的了（点「来源」看全部）" : "没有可添加的应用")))
-                    : (_source == SrcAll ? "没有匹配的应用" : "没有匹配的（点「来源」换个来源试试）"))
+                    // ★「查不到」这两种状态（2026-10-01 加）是用户最容易犯嘀咕的时刻：
+                    //   明明装了/明明在桌面上，列表里却没有 → 直接把「重新扫描」指给他。
+                    : (_source == SrcAll ? "没有匹配的应用 —— 刚装的软件？点左下角「重新扫描」"
+                        : "没有匹配的（换个来源试试；刚装的软件？点左下角「重新扫描」）"))
                 : (_list.Checked.Count > 0 ? ("已选 " + _list.Checked.Count + " 个，点「添加」加进来")
                     : (_source == SrcCustom
                         ? ("自定义文件夹里有的应用 " + _filtered.Count + " 个（共加了 " + CustomDirCount() + " 个文件夹）" + CustomNote())
@@ -844,10 +900,14 @@ namespace BreadLauncher
                         new Rectangle(_filterRect.X + Theme.Px(this, 12), _filterRect.Y, _filterRect.Width - Theme.Px(this, 24), _filterRect.Height),
                         Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
                 }
-                // 提示：右边一直顶到「完成」按钮左边，别只给 180px（长提示会被省略号吃掉）
-                int hintW = Math.Max(Theme.Px(this, 120), _cancel.Left - padL - Theme.Px(this, 10));
+                // 提示：2026-10-01 从「底栏左边」挪到**列表正下方那条空带**里 ——
+                //   ① 左下角让给了「重新扫描」按钮；② 挪上来能占满整行（原来被「完成」按钮挤到 268px，
+                //   长提示会被省略号吃掉，下面那句「别只给 180px」说的就是这个）。
+                //   高度取「列表底 → 按钮行顶」之间的真实空带，跟着布局走，不写死数字。
+                int bandTop = _list.Bottom;
+                int bandH = Math.Max(Theme.Px(this, 20), _cancel.Top - bandTop);
                 Theme.DrawText(g, _hint, Theme.Ui(9f),
-                    new Rectangle(padL, _cancel.Top, hintW, Theme.Px(this, 36)),
+                    new Rectangle(padL, bandTop, Math.Max(Theme.Px(this, 120), ClientSize.Width - padL * 2), bandH),
                     Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
                 using (Pen p = new Pen(Theme.Border))
                     g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);

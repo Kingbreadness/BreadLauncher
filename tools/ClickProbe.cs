@@ -938,6 +938,59 @@ namespace BreadLauncher
                             }
                             catch (Exception exRT) { Check(false, "配置往返断言异常：" + exRT.Message); }
 
+                            // ---- ★左下角「重新扫描」（2026-10-01 用户要求：刷新入口该在这个窗口里）----
+                            //   放最后：它会真的**全量重扫一次**（两百多毫秒），别去干扰前面的断言。
+                            try
+                            {
+                                FlatButton rescanBtn = (FlatButton)typeof(AppPickerForm)
+                                    .GetField("_rescan", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(pf);
+                                Check(rescanBtn != null && rescanBtn.Text == "重新扫描",
+                                    "「添加应用」窗口里有「重新扫描」按钮（实测「"
+                                    + (rescanBtn == null ? "（反射不到 _rescan）" : rescanBtn.Text) + "」）");
+                                if (rescanBtn != null)
+                                {
+                                    Check(rescanBtn.Left < pf.ClientSize.Width / 2 && rescanBtn.Top > pf.ClientSize.Height / 2,
+                                        "它就在窗口**左下角**（实测 " + rescanBtn.Left + "," + rescanBtn.Top
+                                        + "；窗口 " + pf.ClientSize.Width + "x" + pf.ClientSize.Height + "）—— 用户要的是看得见，不是又藏进某个菜单");
+                                    FieldInfo allField2 = typeof(AppPickerForm).GetField("_all", BindingFlags.NonPublic | BindingFlags.Instance);
+                                    List<AppEntry> beforeRescan = (List<AppEntry>)allField2.GetValue(pf);
+                                    int beforeN = beforeRescan == null ? -1 : beforeRescan.Count;
+                                    ClickButton(rescanBtn);          // 真按一下：内部调 RescanNow → 落盘 + 全量重扫 + 换候选
+                                    List<AppEntry> afterRescan = (List<AppEntry>)allField2.GetValue(pf);
+                                    Check(afterRescan != null && afterRescan.Count > 0,
+                                        "点「重新扫描」之后候选列表有内容（重扫前 " + beforeN + " 个 → 重扫后 "
+                                        + (afterRescan == null ? -1 : afterRescan.Count) + " 个）");
+                                    Check(rescanBtn.Text == "重新扫描" && rescanBtn.Enabled,
+                                        "扫完按钮恢复原样、还能再点（实测「" + rescanBtn.Text + "」，Enabled=" + rescanBtn.Enabled + "）");
+                                    // ★筛选框不许被清掉：用户多半正拿它找那个新软件
+                                    string keepQ = "zzz-不存在的名字";
+                                    FieldInfo filterF = typeof(AppPickerForm).GetField("_filter", BindingFlags.NonPublic | BindingFlags.Instance);
+                                    TextBox tb = (TextBox)filterF.GetValue(pf);
+                                    string q0 = tb.Text;
+                                    tb.Text = keepQ;
+                                    ClickButton(rescanBtn);
+                                    Check(tb.Text == keepQ,
+                                        "重扫**不会清掉筛选框**（重扫后仍是「" + tb.Text + "」）—— 清掉等于让用户重打一遍");
+                                    tb.Text = q0;
+                                }
+                            }
+                            catch (Exception exRs) { Check(false, "「重新扫描」按钮断言异常：" + exRs.Message); }
+
+                            // 出图：左下角「重新扫描」+ 提示文字挪到列表下方之后，到底挤没挤到别的东西
+                            // （「画面改动必须出图看」—— 文本断言过了也说明不了排版好不好看）
+                            bool shotOk = false;
+                            try
+                            {
+                                using (Bitmap b = new Bitmap(Math.Max(1, pf.Width), Math.Max(1, pf.Height)))
+                                {
+                                    pf.DrawToBitmap(b, new Rectangle(0, 0, b.Width, b.Height));
+                                    b.Save(Path.Combine(Program.AppDir, "picker-rescan.png"), System.Drawing.Imaging.ImageFormat.Png);
+                                    shotOk = true;
+                                }
+                            }
+                            catch (Exception) { }
+                            Check(shotOk, "「添加应用」窗口出图 build\\picker-rescan.png（人工看：左下角按钮 + 提示的位置）");
+
                             pf.DialogResult = DialogResult.Cancel;
                         }
                     }
@@ -1360,14 +1413,18 @@ namespace BreadLauncher
                     Check(seps == 0, "★整合后的菜单里一条分隔线都没有（实测 " + seps + " 条）—— 用户要求「一整块一整块」，靠灰色标题分块");
                     Check(pm.Items.Count > 0 && pm.Items[0].Enabled == false && pm.Items[0].Text == nameTarget.DisplayName,
                         "菜单第一项是**不可点的标题**（实测「" + pm.Items[0].Text + "」，Enabled=" + pm.Items[0].Enabled + "）");
-                    // ★「不可点的项」必须**恰好只有那三个标题**（应用 / 文件夹 / 面板）—— 只查第一项的话，
+                    // ★「不可点的项」必须**恰好只有那 2 个标题**（应用 / 文件夹）—— 只查第一项的话，
                     //   万一有人把一大片项都禁用了也照样 PASS（子智能体 F 指出的断言边界）。
+                    //   ★2026-10-01：原来是 3 个（还多一个「面板」块），「刷新应用列表」撤出右键后变成 2 个。
                     int disabled = 0;
                     for (int i = 0; i < pm.Items.Count; i++) if (pm.Items[i].Enabled == false) disabled++;
-                    Check(disabled == 3,
-                        "不可点的项**只有 3 个标题**（实测 " + disabled + " 个）—— 除标题外每一项都得能点");
-                    Check(ptexts.IndexOf("刷新应用列表") >= 0,
-                        "「刷新应用列表」也在这个菜单里（用户要求：别专门跑到设置里找）");
+                    Check(disabled == 2,
+                        "不可点的项**只有 2 个标题**（应用 / 文件夹；实测 " + disabled + " 个）—— 除标题外每一项都得能点");
+                    // ★★2026-10-01 用户要求：「刷新应用列表」**不该待在右键菜单里** —— 真正需要刷新的时刻是
+                    //   「刚装的软件在「添加应用」里找不到」，而那个窗口是**模态**的（开着时右键根本点不动）。
+                    //   现在改成「开窗前按需自动重扫 + 窗口里一个『重新扫描』」，这两条就是那次改动的回归。
+                    Check(ptexts.IndexOf("刷新应用列表") < 0,
+                        "★右键菜单里**没有**「刷新应用列表」（实测 " + ptexts + "）");
                     // 「名字常驻显示」这个开关**画不出勾**（菜单没有勾选框边距），所以状态必须写在文字里
                     Check(ptexts.IndexOf("名字常驻显示（画在图标下）：已开启") >= 0
                           || ptexts.IndexOf("名字常驻显示（画在图标下）：已关闭") >= 0,
@@ -1695,7 +1752,16 @@ namespace BreadLauncher
                     typeof(MainForm).GetField("_hoverGroup", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, -1);
                     typeof(MainForm).GetField("_hoverSlot", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, -2);
                 }
-                else Say("（这组没有应用，跳过显示名断言）");
+                else
+                {
+                    // ★★这一大段（①~⑩：右键菜单结构、显示名、名字常驻、边缘高亮、设置菜单、页脚空白带…）
+                    //   全都建立在「这个分组里至少有一个应用」之上 —— **前提不成立也必须记进跳过汇总**
+                    //   （2026-10-01 的教训，见 docs\dev-notes.md 坑 47）：原来这里只 Say 一句「跳过显示名断言」，
+                    //   等于把 ①~⑩ 整段**静默**跳过，报告看起来像全跑过了（scroll 那份 = 13 个空组，就是这样）。
+                    string why = "这个分组一个应用都没有 → ①~⑩ 整段没跑（右键菜单结构 / 显示名 / 名字常驻 / 设置菜单 / 页脚空白带）；要覆盖它得换一份非空分组的配置";
+                    NoteSkip(why);
+                    Say("（跳过：" + why + "）");
+                }
             }
             catch (Exception exName) { Check(false, "显示名断言异常：" + exName.Message); }
 
@@ -2215,6 +2281,55 @@ namespace BreadLauncher
             }
             catch (Exception exDv) { Check(false, "拖动后右键断言异常：" + exDv.Message); }
 
+            // ============================================================
+            // ⑪ ★「刷新应用列表」的落点（用户 2026-10-01 的要求）—— **放在最后、不设前提**
+            //    ★★为什么要放这个位置（本次实测踩到）：这些断言原来塞在上面那段
+            //    `if (nameTarget != null)` 里，而 scroll 配置是 13 个**空组** → 整段静默跳过、
+            //    连「跳过汇总」都不记 —— 那就是「0 FAIL ≠ 都测过了」的翻版。
+            //    放在收尾这里，7 份配置**每一份都会真的跑**。
+            //    要断的是：右键两个菜单里都**没有**它（真正需要它的时刻在模态的「添加应用」窗口里，
+            //    开着那个窗口时右键根本点不动），设置菜单里那份**保留**，以及两个自动重扫阈值的**单位**。
+            // ============================================================
+            try
+            {
+                ContextMenuStrip pe = f.BuildEmptyMenu();
+                string etexts = "";
+                for (int i = 0; i < pe.Items.Count; i++) etexts += pe.Items[i].Text + " | ";
+                Check(etexts.IndexOf("新建分组") >= 0 && etexts.IndexOf("刷新应用列表") < 0,
+                    "★右键点面板空白处：只剩「新建分组…」，没有「刷新应用列表」（实测 " + etexts + "）");
+                pe.Dispose();
+
+                ContextMenuStrip pfNo = f.BuildTileMenu(gv, null);
+                string ftexts = "";
+                for (int i = 0; i < pfNo.Items.Count; i++) ftexts += pfNo.Items[i].Text + " | ";
+                Check(ftexts.IndexOf("添加应用") >= 0 && ftexts.IndexOf("刷新应用列表") < 0,
+                    "★右键格子（没点中图标）的那个菜单里也没有「刷新应用列表」（实测 " + ftexts + "）");
+                pfNo.Dispose();
+
+                ContextMenuStrip psKeep = f.BuildSettingsMenu();
+                string keepTexts = "";
+                for (int i = 0; i < psKeep.Items.Count; i++) keepTexts += psKeep.Items[i].Text + " | ";
+                Check(keepTexts.IndexOf("刷新应用列表") >= 0,
+                    "设置菜单里**保留**了「刷新应用列表」（右键撤了，这里是兜底；实测 "
+                    + keepTexts.Substring(0, Math.Min(50, keepTexts.Length)) + "…）");
+                psKeep.Dispose();
+
+                FieldInfo fCacheMin = typeof(MainForm).GetField("CacheRefreshMinutes", BindingFlags.NonPublic | BindingFlags.Static);
+                FieldInfo fPickMin = typeof(MainForm).GetField("PickerRescanMinutes", BindingFlags.NonPublic | BindingFlags.Static);
+                int cacheMin = fCacheMin == null ? -1 : (int)fCacheMin.GetRawConstantValue();
+                int pickMin = fPickMin == null ? -1 : (int)fPickMin.GetRawConstantValue();
+                Check(cacheMin == 5 && pickMin == 1,
+                    "自动重扫阈值：启动时 5 分钟、开「添加应用」前 1 分钟（实测 " + cacheMin + " / " + pickMin + " 分钟）");
+                Check(StaleAt(90, 5) && StaleAt(2, 5) == false,
+                    "★IsCacheStale 的单位是**分钟**：90 分钟前的缓存算旧、2 分钟前的不算（把 12 小时改成 5 却漏改单位，这条会红）");
+                Check(ConfigStore.IsCacheStale(null, 5),
+                    "缓存读不出来 / 没有缓存 → 一律算「旧」（不然新装的机器永远不自动扫）");
+                Check(f.ShouldRescanBeforePicker() == ConfigStore.IsCacheStale(
+                        ConfigStore.LoadCache(Program.AppDir), pickMin),
+                    "「打开添加应用前要不要重扫」的判决 = 拿 1 分钟去问 IsCacheStale（口径必须和常量一致）");
+            }
+            catch (Exception exMenuStruct) { Check(false, "右键/设置菜单结构断言异常：" + exMenuStruct.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
@@ -2363,6 +2478,17 @@ namespace BreadLauncher
         {
             MethodInfo m = form.GetType().GetMethod("SetSource", BindingFlags.NonPublic | BindingFlags.Instance);
             m.Invoke(form, new object[] { mode });
+        }
+
+        /// <summary>造一份「扫描时间是 N 分钟前」的缓存，用来断言 `IsCacheStale` 的**单位**。
+        /// ★必须自己造：拿真实缓存文件去测的话，本机这份缓存的时间是"刚刚"，
+        ///   「小时 vs 分钟」写反了也照样 PASS（这正是 2026-10-01 那次改动的风险点）。</summary>
+        private static bool StaleAt(int minutesAgo, int threshold)
+        {
+            AppCache c = new AppCache();
+            c.Apps.Add(new AppRecord());
+            c.ScannedUtc = DateTime.UtcNow.AddMinutes(-minutesAgo).ToString("o");
+            return ConfigStore.IsCacheStale(c, threshold);
         }
 
         private static void Check(bool cond, string what)        {

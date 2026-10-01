@@ -65,6 +65,18 @@ namespace BreadLauncher
         private int _iconGen;
         private int _scanGen;
 
+        /// <summary>启动时：缓存比这还旧就在后台重扫一遍（单位**分钟**）。
+        /// ★2026-10-01 从 12 小时降到 5 分钟 —— 用户报「刚装的软件在「添加应用」里找不到」。
+        /// 面板是「用完就退」的，每次双击都是新进程：12 小时意味着下午装的游戏晚上还看不见。
+        /// ⚠ 这不是定时器，**只在启动那一刻判一次**；关掉面板进程就没了，不留任何后台。</summary>
+        private const int CacheRefreshMinutes = 5;
+
+        /// <summary>打开「添加应用」之前：缓存比这还旧就先同步重扫一次（单位**分钟**）。
+        /// 1 分钟是为了「同一个会话里连着开几次窗口不用反复扫」，而不是为了省事 ——
+        /// 刚装完软件的那一刻，用户正站在这个窗口里，这是唯一能救他的地方（窗口是模态的，
+        /// 开着它的时候主面板右键点不动，那个「刷新应用列表」根本够不着）。</summary>
+        private const int PickerRescanMinutes = 1;
+
         // 分组区布局（OnPaint 和命中测试共用同一套数）
         private int _groupLeft;
         private int _groupTop;
@@ -1593,7 +1605,7 @@ namespace BreadLauncher
             ApplyMetadata();
             RefreshContent();
 
-            if (usedCache && ConfigStore.IsCacheStale(cache, 12)) StartBackgroundRefresh();
+            if (usedCache && ConfigStore.IsCacheStale(cache, CacheRefreshMinutes)) StartBackgroundRefresh();
         }
 
         private void StartBackgroundRefresh()
@@ -1985,10 +1997,22 @@ namespace BreadLauncher
         /// ★必须重扫：目录是刚加的，`_all` 里还没有那些条目；重扫顺带也刷新了面板。</summary>
         internal List<AppEntry> RescanForPicker()
         {
-            PersistSettings();
-            // ★重扫是**同步跑在界面线程**上的（`LoadData(true)` → `AppsFolderScanner.Scan`）：本地目录
-            //   两百多毫秒，目录多了 / 目录很大就会更久。慢的时候至少让用户看到「在忙」，别以为面板死了。
-            //   （真正的后台化是笔更大的改动：要处理回调、换代、失败回滚 —— 先给可见反馈 + 兜住异常。）
+            RescanAll(true, "自定义目录改了之后");
+            return BuildCandidates();
+        }
+
+        /// <summary>
+        /// 全量重扫（忽略缓存），**同步跑在界面线程**上（`LoadData(true)` → `AppsFolderScanner.Scan`）：
+        /// 本地目录两百多毫秒（实测整进程跑一次 `--scan` 约 470ms，含 .NET 启动），
+        /// 目录多了 / 目录很大就会更久。慢的时候至少让用户看到「在忙」，别以为面板死了。
+        /// （真正的后台化是笔更大的改动：要处理回调、换代、失败回滚 —— 先给可见反馈 + 兜住异常。）
+        /// </summary>
+        /// <param name="persist">扫描前先把设置落盘（自定义目录刚改过时必须；其余场合会被
+        /// 「内容没变就跳过」挡住，无害）。</param>
+        /// <param name="why">只进日志：出问题时能看出这次重扫是谁触发的。</param>
+        private void RescanAll(bool persist, string why)
+        {
+            if (persist) PersistSettings();
             Cursor prev = Cursor;
             try
             {
@@ -1998,13 +2022,24 @@ namespace BreadLauncher
             }
             catch (Exception ex)
             {
-                ConfigStore.Log(Program.AppDir, "重扫失败（自定义目录改了之后）：" + ex.Message);
+                ConfigStore.Log(Program.AppDir, "重扫失败（" + why + "）：" + ex.Message);
             }
             finally
             {
                 Cursor = prev;
             }
-            return BuildCandidates();
+        }
+
+        /// <summary>打开「添加应用」之前该不该先扫一遍：缓存旧了 / 压根读不出来 → 扫。
+        /// ★抽成方法是为了**能被探针直接断言**（窗口里那一段很难稳定复现）。</summary>
+        internal bool ShouldRescanBeforePicker()
+        {
+            try
+            {
+                AppCache c = ConfigStore.LoadCache(Program.AppDir);
+                return ConfigStore.IsCacheStale(c, PickerRescanMinutes);
+            }
+            catch (Exception) { return true; }   // 读不出来 = 不敢信这份名单，扫
         }
 
         private List<AppEntry> BuildCandidates()
@@ -2028,6 +2063,14 @@ namespace BreadLauncher
         private void OpenPicker(GroupView gv)
         {
             if (gv == null) return;
+
+            // ★★开窗之前先补扫一遍（2026-10-01，用户报「刚装的软件在「添加应用」里找不到」）：
+            //   这个窗口是**模态**的（ShowDialog），开着它的时候主面板点不动、右键菜单根本弹不出来，
+            //   所以「名单旧了」这件事必须在**开窗之前**解决；否则用户只能：关窗 → 右键 → 刷新 →
+            //   重新点进那个分组 → 再开窗（四步，而且「刷新」现在已经从右键撤掉了）。
+            //   阈值 PickerRescanMinutes：同一个会话里连着开几次窗口不会反复扫。
+            //   顺带治好「候选为 0 时那句『都已经分组了』是假话」——名单旧了会被误报成"都加过了"。
+            if (ShouldRescanBeforePicker()) RescanAll(false, "打开添加应用前");
 
             List<AppEntry> candidates = BuildCandidates();
             if (candidates.Count == 0)
@@ -2175,8 +2218,12 @@ namespace BreadLauncher
         /// <summary>
         /// 菜单内容（抽出来给自检断言；用户看到的就是这些）。**一整块一整块，块内不插横线**：
         ///   ① 应用块 —— 只有点中小图标才有，标题就是那个应用的名字；
-        ///   ② 文件夹块 —— 永远都有，标题是「组名」文件夹；
-        ///   ③ 面板块 —— 永远都有，放全局动作（刷新应用列表），用户要求「别专门跑到设置里去找」。
+        ///   ② 文件夹块 —— 永远都有，标题是「组名」文件夹。
+        /// ★2026-10-01：「刷新应用列表」原来在 ③「面板」块里。用户提出**它不该待在右键** ——
+        ///   真正需要刷新的时刻是「刚装的软件在「添加应用」里找不到」，而那个窗口是**模态**的，
+        ///   开着它的时候主面板点不动、右键菜单根本弹不出来 → 于是整块撤掉，改成
+        ///   「打开添加应用前按需自动重扫」+「窗口里一个『重新扫描』按钮」。
+        ///   ⚠ 设置菜单里那一份**保留**（不打扰的兜底入口），别顺手一起删了。
         /// </summary>
         private void FillTileMenu(ContextMenuStrip menu, GroupView gv, AppEntry en)
         {
@@ -2235,9 +2282,9 @@ namespace BreadLauncher
             menu.Items.Add("右移一位", null, delegate { MoveGroup(g, 1); });
             menu.Items.Add("删除分组", null, delegate { DeleteGroup(g); });   // 里面自带确认框
 
-            // ---------- ③ 面板块（全局动作）----------
-            menu.Items.Add(HeaderItem("面板", true));
-            menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
+            // ---------- ③ 原来的「面板」块：2026-10-01 整块撤掉 ----------
+            // 里面只有「刷新应用列表」一项，撤掉之后这块就空了 —— 空标题不能留（见方法头的原因）。
+            // 手动刷新现在在「设置」菜单里有一份，「添加应用」窗口里也有一份。
         }
 
         /// <summary>
@@ -2309,15 +2356,22 @@ namespace BreadLauncher
             }
         }
 
+        /// <summary>自检用：和右键空白处弹出的**同源**菜单副本（不用真的弹窗）。</summary>
+        internal ContextMenuStrip BuildEmptyMenu()
+        {
+            ContextMenuStrip menu = NewMenu(false);
+            menu.Items.Add("新建分组…", null, delegate { NewGroup(); });
+            // ★2026-10-01：这里原来还有一条「刷新应用列表」，撤了（同 FillTileMenu 头部的理由）。
+            //   想手动刷：设置齿轮里有一份，「添加应用」窗口里也有一份；多数情况下系统自己已经扫过了。
+            return menu;
+        }
+
         private void ShowEmptyMenu()
         {
             _suppressDeactivate = true;
             try
             {
-                ContextMenuStrip menu = NewMenu(false);
-
-                menu.Items.Add("新建分组…", null, delegate { NewGroup(); });
-                menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
+                ContextMenuStrip menu = BuildEmptyMenu();
 
                 menu.Closed += delegate { _suppressDeactivate = false; };
                 KeepMenu(menu);
@@ -2486,7 +2540,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.8\n\n" +
+                    "BreadLauncher 1.9\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
