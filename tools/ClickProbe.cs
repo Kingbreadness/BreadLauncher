@@ -2330,6 +2330,31 @@ namespace BreadLauncher
             }
             catch (Exception exMenuStruct) { Check(false, "右键/设置菜单结构断言异常：" + exMenuStruct.Message); }
 
+            // ============================================================
+            // ⑫ ★窗口 / 任务栏图标：必须是**程序自己的图标**，不能是 WinForms 那张默认的彩色拼图
+            //    （用户 2026-10-01 报「任务栏上的图标是不是不太对」—— 实测那正是 .NET Framework 版
+            //     WinForms 自带的默认图标，因为全工程从来没设过 `Form.Icon`，见 dev-notes 坑 49）。
+            //    ★同样放在收尾处、不设前提：这条跟分组无关，7 份配置**每一份都要真跑**（见坑 47）。
+            // ============================================================
+            try
+            {
+                Icon mineIcon = f.Icon;
+                Icon exeIcon = null;
+                try { exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+                catch (Exception) { }
+                Icon defIcon = new Form().Icon;                 // WinForms 自带的默认图标 = 那张彩色拼图
+                byte[] pxMine = IconPixels(mineIcon, 32);
+                byte[] pxExe = IconPixels(exeIcon, 32);
+                byte[] pxDef = IconPixels(defIcon, 32);
+                Check(mineIcon != null && pxMine != null,
+                    "窗口设了图标（不是 null）");
+                Check(Near(pxMine, pxDef, 2) == false,
+                    "★窗口图标**不是** WinForms 默认的那张彩色拼图（那正是用户报的那个错图标）");
+                Check(Near(pxMine, pxExe, 2),
+                    "★窗口图标 = exe 里嵌的那个图标（任务栏 / Alt-Tab 与资源管理器里看到的是同一张）");
+            }
+            catch (Exception exIcon2) { Check(false, "窗口图标断言异常：" + exIcon2.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
@@ -2494,6 +2519,44 @@ namespace BreadLauncher
         private static void Check(bool cond, string what)        {
             if (cond == false) _ok = false;
             Say((cond ? "[PASS] " : "[FAIL] ") + what);
+        }
+
+        /// <summary>把一个图标按 size×size 画出来、取**原始像素**（BGRA）—— 用来比两张图标是不是同一张
+        /// （「窗口图标 = exe 里那张」这条断言靠它，见 ⑫ 与 dev-notes 坑 49）。
+        /// ★**别用「存成 PNG 再比字节」**：同一个图标经不同 API 取出来、或换个绘制路径，
+        ///   PNG 编码可能不同而像素完全一样 —— 2026-10-01 我就因此误判过一次（把「同一张」判成了「不同」），
+        ///   那会变成**假失败**，把人骗去查一个不存在的问题。</summary>
+        private static byte[] IconPixels(Icon ic, int size)
+        {
+            if (ic == null) return null;
+            try
+            {
+                using (Bitmap b = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (Graphics g = Graphics.FromImage(b))
+                    {
+                        g.Clear(Color.Transparent);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawIcon(ic, new Rectangle(0, 0, size, size));
+                    }
+                    System.Drawing.Imaging.BitmapData d = b.LockBits(new Rectangle(0, 0, size, size),
+                        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    byte[] px = new byte[d.Stride * size];
+                    System.Runtime.InteropServices.Marshal.Copy(d.Scan0, px, 0, px.Length);
+                    b.UnlockBits(d);
+                    return px;
+                }
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>两张图**像素级**是不是够接近（容差 tol / 每通道）。用容差而不是全等：
+        /// 同一张图标换个 API 取、边缘抗锯齿可能差一两个色阶，那不算「不是同一张」。</summary>
+        private static bool Near(byte[] a, byte[] b, int tol)
+        {
+            if (a == null || b == null || a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (Math.Abs(a[i] - b[i]) > tol) return false;
+            return true;
         }
 
         /// <summary>

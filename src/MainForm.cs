@@ -347,6 +347,16 @@ namespace BreadLauncher
             _settingsFile = settingsFile;
 
             Text = "BreadLauncher";
+            // ★★窗口 / 任务栏图标必须**自己设**。不设的话 WinForms 会用它**自带的默认图标**（一张彩色拼图），
+            //   任务栏按钮和 Alt-Tab 上就一直是那张，跟资源管理器 / 桌面快捷方式看到的那张（面包方块）对不上
+            //   —— 用户 2026-10-01 报的就是这个（「这图片是不是不太对」）。
+            //   实测证据：运行中窗口的图标与 .NET Framework 版 WinForms 的默认图标**逐字节相同**（16×16 与 32×32 两份）。
+            //   从**自己的 exe** 里取（csc 编译时 `/win32icon` 已经把 assets\BreadLauncher.ico 嵌进去了）——
+            //   这样单文件拷贝到哪儿都对，不依赖旁边的 .ico；
+            //   ⚠ 别改成 `new Icon(typeof(MainForm), "BreadLauncher.ico")`：那要求把 ico 当**托管资源**嵌进去
+            //     （要改编译命令，探针那份编译没有它就会抛异常）。
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch (Exception) { }
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = true;
@@ -2540,7 +2550,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.9\n\n" +
+                    "BreadLauncher 1.10\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
