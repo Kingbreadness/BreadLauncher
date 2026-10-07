@@ -1,4 +1,4 @@
-// ConfigStore.cs —— 设置与本地缓存的读写（全部放在软件自己目录，不碰 C 盘、不写注册表）
+﻿// ConfigStore.cs —— 设置与本地缓存的读写（全部放在软件自己目录，不碰 C 盘、不写注册表）
 //
 // 为什么不用注册表：用户明确要求「便携、不留后台、不污染系统」。
 // 为什么用 JavaScriptSerializer：.NET Framework 自带，零安装，够用。
@@ -28,10 +28,14 @@ namespace BreadLauncher
         /// <summary>面板位置（左上角，屏幕坐标）。负值 = 还没定过，按「贴鼠标所在屏的任务栏上方居中」自动放。</summary>
         public int PanelX = -1;
         public int PanelY = -1;
-        /// <summary>面板宽度（逻辑像素）；0 或负 = 用默认 640。</summary>
+        /// <summary>面板宽度（物理像素，在本字段记的 `PanelDpi` 那个 DPI 下量的）；0 或负 = 用默认 640。</summary>
         public int PanelW = 0;
-        /// <summary>面板高度；0 = 自动（按分组数量收紧到刚好放得下）。用户手动拉过高就固定住。</summary>
+        /// <summary>面板高度（同上）；0 = 自动（按分组数量收紧到刚好放得下）。用户手动拉过高就固定住。</summary>
         public int PanelH = 0;
+        /// <summary>存 `PanelW/PanelH` 时那台屏幕的 DPI。**0 = 老配置**：2026-10-07 之前的版本永远按 96 DPI 画
+        /// （见 `Theme.RealDpi` 的注释），所以老配置里的尺寸一律按 96 解释。
+        /// 换屏 / 改缩放之后按 `当前DPI / PanelDpi` 换算，面板看上去还是原来那么大。</summary>
+        public int PanelDpi = 0;
         /// <summary>是否已经做过「首次运行预置几个常用应用」，做过了就不再自动加，尊重用户取消固定的选择。</summary>
         public bool Seeded = false;
         /// <summary>启动应用之后要不要关掉面板。**默认 false = 不关**（用户要连着启动好几个应用；

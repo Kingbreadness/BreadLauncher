@@ -1,4 +1,4 @@
-// MainForm.cs —— 面板本体：大文件夹分组、启动、右键菜单
+﻿// MainForm.cs —— 面板本体：大文件夹分组、启动、右键菜单
 //
 // 交互约定（**照代码重写过一遍**，2026-09-27 核实）：
 //   · 点大文件夹里的小图标 = 直接启动。**默认启动完不关面板**，可以连着点好几个
@@ -311,6 +311,23 @@ namespace BreadLauncher
             QueueDragTarget(new Rectangle(left, top, right - left, bottom - top), true);
         }
 
+        /// <summary>把配置里存的窗口尺寸换算到**当前** DPI。
+        /// 存的是「当年那个 DPI 下的物理像素」，所以要按 `当前DPI / 存的时候的DPI` 缩放 ——
+        /// 不换算的话，换屏 / 改缩放之后面板就不对了：150% 的屏上格子变大、窗口还是老尺寸 → 挤成两列。
+        /// `storedDpi ≤ 0` = **老配置**（2026-10-07 之前的版本永远按 96 画，见 `Theme.RealDpi`），按 96 算。
+        /// 返回 (0,0) = 「没存过 / 让程序自己算大小」。
+        /// ★抽成静态纯函数是为了让探针能直接断言（见 `docs\dev-notes.md` 坑 50）。</summary>
+        internal static Size ScaleStoredBounds(int w, int h, int storedDpi, int nowDpi)
+        {
+            if (w <= 0 || h <= 0) return new Size(0, 0);
+            if (nowDpi <= 0) nowDpi = 96;
+            if (storedDpi <= 0) storedDpi = 96;
+            if (storedDpi == nowDpi) return new Size(w, h);
+            double k = nowDpi / (double)storedDpi;
+            return new Size(Math.Max(1, (int)Math.Round(w * k, MidpointRounding.AwayFromZero)),
+                            Math.Max(1, (int)Math.Round(h * k, MidpointRounding.AwayFromZero)));
+        }
+
         /// <summary>把当前的位置/大小存进配置（下次打开就用这个，位置和大小都记得住）。</summary>
         private void SavePanelBounds(bool vertical)
         {
@@ -319,6 +336,7 @@ namespace BreadLauncher
             _settings.PanelY = Top;
             _settings.PanelW = Width;
             if (vertical) _settings.PanelH = Height;   // 只有上下拉过才固定高度；左右拉仍保持自动高度
+            _settings.PanelDpi = Theme.RealDpi(this);  // ★记下"这个尺寸是在多少 DPI 下量的"，换屏后才换算得回来
             PersistSettings();
         }
 
@@ -381,14 +399,39 @@ namespace BreadLauncher
             // ★★第一帧就必须出现在正确的位置上。不设这两行的话，窗口会以默认的 (0,0)（= 屏幕左上角）
             //   被创建出来，而真正的位置要等 OnLoad → PositionWindow() 才摆上去 —— 于是「左上角闪一下再跳过来」
             //   （用户 2026-09-28 报的「每次打开左上角都会弹窗然后消失」）。
-            //   这里用的是和 OnLoad 完全相同的那份存档值，等价、不会多一次缩放；
             //   Location 是屏幕绝对像素，不需要按 DPI 换算。
+            // ★★但**尺寸要换算**（2026-10-07 加）：配置里的 PanelW/H 是"存的时候那个 DPI 下的物理像素"，
+            //   而程序以前永远按 96 画（见 Theme.RealDpi）—— 现在按真实 DPI 画了，不换算的话
+            //   150% 屏上格子变大、窗口还是老尺寸 → 直接挤成两列（用户报的「图标好小」就是这一串问题的表现）。
             if (_settings != null)
             {
+                int nowDpi = Theme.RealDpi(this);      // 构造期还没有窗口句柄 → 走 GetDpiForSystem，够用
                 if (_settings.PanelW > 0 && _settings.PanelH > 0)
-                    Size = new Size(_settings.PanelW, _settings.PanelH);
+                {
+                    Size fixedSize = ScaleStoredBounds(_settings.PanelW, _settings.PanelH, _settings.PanelDpi, nowDpi);
+                    Size = fixedSize;
+                    // 就地改成"当前 DPI 下的物理像素"：后面的布局 / 保存都按它算，配置下一次落盘就自愈了
+                    _settings.PanelW = fixedSize.Width;
+                    _settings.PanelH = fixedSize.Height;
+                    _settings.PanelDpi = nowDpi;
+                }
                 if (_settings.PanelX >= 0 && _settings.PanelY >= 0)
-                    Location = new Point(_settings.PanelX, _settings.PanelY);
+                {
+                    // 尺寸换算完可能比屏幕还大（老配置在大屏上存的），所以位置要**夹进工作区**再设，
+                    // 不然面板会有一截挂在屏幕外、而且用户拖不回来（拖动有最小/最大限制，但开局就超界会很难受）。
+                    Rectangle wa = Screen.FromPoint(new Point(_settings.PanelX, _settings.PanelY)).WorkingArea;
+                    int w = Math.Min(Width, wa.Width);
+                    int h = Math.Min(Height, wa.Height);
+                    if (w != Width || h != Height) { Size = new Size(w, h); _settings.PanelW = w; _settings.PanelH = h; }
+                    int x = _settings.PanelX, y = _settings.PanelY;
+                    if (x + w > wa.Right) x = wa.Right - w;
+                    if (y + h > wa.Bottom) y = wa.Bottom - h;
+                    if (x < wa.Left) x = wa.Left;
+                    if (y < wa.Top) y = wa.Top;
+                    Location = new Point(x, y);
+                    _settings.PanelX = x;
+                    _settings.PanelY = y;
+                }
             }
 
             BuildUi();
@@ -2550,7 +2593,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.10\n\n" +
+                    "BreadLauncher 1.11\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

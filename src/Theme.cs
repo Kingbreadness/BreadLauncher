@@ -1,4 +1,4 @@
-// Theme.cs —— 颜色/字体/圆角/亚克力 等视觉基础设施
+﻿// Theme.cs —— 颜色/字体/圆角/亚克力 等视觉基础设施
 //
 // 目标：看着像 Windows 11 开始菜单的深色版。所有尺寸都乘 DPI 系数，125% 缩放下不会糊也不会错位。
 
@@ -138,12 +138,66 @@ namespace BreadLauncher
             catch (Exception) { }
         }
 
+        /// <summary>纯换算：把「96 DPI 下的设计值」换成某个 DPI 下的像素数。
+        /// ★单独抽出来是为了**能被探针直接断言**（96→原值、120→×1.25、144→×1.5）——
+        ///   它不依赖运行环境，所以在探针里也验得动（见 `docs\dev-notes.md` 坑 50）。</summary>
+        public static int PxFor(int dpi, double v)
+        {
+            if (dpi <= 0) dpi = 96;
+            return (int)Math.Round(v * dpi / 96.0, MidpointRounding.AwayFromZero);
+        }
+
+        [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
+
+        /// <summary>按控件记住算过的 DPI（弱引用，控件没了自动回收；不会随着开窗口越攒越多）。</summary>
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, object> DpiMemo
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<Control, object>();
+
+        /// <summary>★★**真实 DPI** —— 别用 `Control.DeviceDpi`！
+        /// .NET Framework 的 WinForms 只有在 exe 旁边放一份 `app.config`（写 `DpiAwareness`）时才会认高 DPI，
+        /// 而本工程是**单文件**产品（拷一个 exe 就能用、不能带 .config）→ `DeviceDpi` **永远返回 96**：
+        /// 所有 `Px()` 都按 100% 算，而字体是按**磅**画的、GDI+ 早就按真实 DPI 放大了 → 于是「框小、字大」：
+        /// 图标显得小、底栏文字被截断。**这就是用户 2026-10-07 报的「换回笔记本屏后好小」的根因。**
+        /// 实测（本机 150% 缩放）：`GetDpiForSystem()`=144、`GetDpiForWindow()`=144，而 `DeviceDpi`=96。
+        /// ⚠ 运行时改不了：`SetProcessDpiAwarenessContext` 会被清单挡住（实测返回 False / 错误 5），
+        ///   `SetThreadDpiAwarenessContext` 能提升线程感知、但 WinForms 照样守着 96（实测过）。
+        /// 顺序：窗口 DPI → 系统 DPI → 96（前两个在**没有 DPI 清单**的进程里都会返回 96 —— 探针就是这种，
+        ///   所以探针的渲染口径完全不变，那 795 条像素断言的数字依然算数）。</summary>
+        public static int RealDpi(Control c)
+        {
+            if (c != null)
+            {
+                object hit;
+                if (DpiMemo.TryGetValue(c, out hit)) return (int)hit;
+            }
+            int dpi = QueryDpi(c);
+            if (c != null)
+            {
+                try { DpiMemo.Add(c, dpi); } catch (ArgumentException) { }
+            }
+            return dpi;
+        }
+
+        private static int QueryDpi(Control c)
+        {
+            try
+            {
+                if (c != null && c.IsHandleCreated)
+                {
+                    uint d = GetDpiForWindow(c.Handle);
+                    if (d > 0) return (int)d;
+                }
+            }
+            catch (Exception) { }
+            try { uint s = GetDpiForSystem(); if (s > 0) return (int)s; }
+            catch (Exception) { }
+            return 96;
+        }
+
         public static int Px(Control c, double v)
         {
-            int dpi = 96;
-            try { if (c != null && c.DeviceDpi > 0) dpi = c.DeviceDpi; }
-            catch { }
-            return (int)Math.Round(v * dpi / 96.0);
+            return PxFor(RealDpi(c), v);
         }
 
         public static GraphicsPath Round(Rectangle r, int radius)

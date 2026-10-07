@@ -1,4 +1,4 @@
-// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
+﻿// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
 //   1) 组内分页：超过 9 个每页 9 格，第 9 格是第 9 个应用（没有「+N」格了）+ 越界格为空
 //   2) 滚轮：停在文件夹上 = 翻内页；不在文件夹上 = 滚分组区（方向与系统一致）
 //   3) 拖动分组：把第 1 个文件夹拖到第 2 个位置，顺序真的换了
@@ -67,9 +67,16 @@ namespace BreadLauncher
                     new UTF8Encoding(false));
 
                 MainForm ff = new MainForm(cfgPath);
-                Check(ff.Location.X == 1234 && ff.Location.Y == 567,
+                // ★2026-10-07 起构造函数还会把位置**夹进工作区**（换屏 / 改缩放之后存档尺寸会变，可能超出屏幕边界），
+                //   所以期望值不能写死 1234,567 —— 按同样的规则算出来再比。这条仍然钉着「别闪窗」那件事：
+                //   第一帧只要没摆在存档位置附近，就会是 (0,0) → 立刻红。
+                Rectangle waFF = Screen.FromPoint(new Point(1234, 567)).WorkingArea;
+                int expX = Math.Max(waFF.Left, Math.Min(1234, waFF.Right - 480));
+                int expY = Math.Max(waFF.Top, Math.Min(567, waFF.Bottom - 360));
+                Check(ff.Location.X == expX && ff.Location.Y == expY && (expX != 0 || expY != 0),
                     "构造函数里窗口就摆在存档位置上（实测 " + ff.Location.X + "," + ff.Location.Y +
-                    "，期望 1234,567）—— 不摆的话第一帧会出现在屏幕左上角 (0,0)，就是用户报的那个闪窗");
+                    "，期望 " + expX + "," + expY + " = 存档 1234,567 再夹进工作区）"
+                    + "—— 不摆的话第一帧会出现在屏幕左上角 (0,0)，就是用户报的那个闪窗");
                 Check(ff.Width == 480 && ff.Height == 360,
                     "构造函数里尺寸也是存档值（实测 " + ff.Width + "x" + ff.Height + "，期望 480x360）");
 
@@ -2354,6 +2361,44 @@ namespace BreadLauncher
                     "★窗口图标 = exe 里嵌的那个图标（任务栏 / Alt-Tab 与资源管理器里看到的是同一张）");
             }
             catch (Exception exIcon2) { Check(false, "窗口图标断言异常：" + exIcon2.Message); }
+
+            // ============================================================
+            // ⑬ ★高 DPI 缩放（用户 2026-10-07 报「换回笔记本屏后图标好小」）—— 见 dev-notes 坑 50。
+            //    ⚠ 这里只能验**纯函数** + 「探针自己的口径」：探针进程**没有 DPI 清单**，Windows 会把一切都
+            //      虚拟化成 96（实测 GetDpiForSystem / GetDpiForWindow 全返回 96），所以**探针看不到真实 150% 那一侧**。
+            //      那一边的证据只能来自「真实启动 + 量渲染出来的像素」（本机 150%：容器高 158 → 238）。
+            //      把这条限制写在这儿，免得以后有人以为"探针过了 = 高 DPI 也验过了"。
+            // ============================================================
+            try
+            {
+                Check(Theme.PxFor(96, 30) == 30 && Theme.PxFor(120, 30) == 38 && Theme.PxFor(144, 30) == 45,
+                    "PxFor 换算：96→30、120→38、144→45（实测 " + Theme.PxFor(96, 30) + " / "
+                    + Theme.PxFor(120, 30) + " / " + Theme.PxFor(144, 30) + "）");
+                Check(Theme.PxFor(144, 36) == 54 && Theme.PxFor(144, 132) == 198,
+                    "文件夹「大」档在 144 DPI：图标 36→" + Theme.PxFor(144, 36) + "、格子 132→" + Theme.PxFor(144, 132));
+                Check(Theme.PxFor(0, 30) == 30,
+                    "DPI 传 0 时按 96 兜底（不会算出 0 像素）");
+                int probeDpi = Theme.RealDpi(f);
+                Check(probeDpi == 96,
+                    "★探针自己的 DPI = 96（实测 " + probeDpi + "）：没有 DPI 清单的进程会被 Windows 虚拟化成 96，"
+                    + "所以本探针所有像素断言的数字口径不变 —— 这条红了说明口径变了，别的数字都得重算");
+
+                Size sOld = MainForm.ScaleStoredBounds(577, 718, 0, 144);      // 老配置（96 时代存的）→ 150% 屏
+                Size sSame = MainForm.ScaleStoredBounds(577, 718, 96, 144);
+                Size sKeep = MainForm.ScaleStoredBounds(577, 718, 144, 144);
+                Size s125 = MainForm.ScaleStoredBounds(604, 738, 120, 144);    // 125% 时代存的 → 150% 屏
+                Size sNone = MainForm.ScaleStoredBounds(0, 718, 96, 144);
+                Check(sOld.Width == 866 && sOld.Height == 1077 && sSame == sOld,
+                    "存档尺寸换算（老配置没有 PanelDpi → 按 96 算）：577×718 → " + sOld.Width + "×" + sOld.Height
+                    + "（期望 866×1077）= 用户这台机器上实际发生的那次");
+                Check(sKeep.Width == 577 && sKeep.Height == 718,
+                    "同一个 DPI 下存的尺寸 → 原样不动（" + sKeep.Width + "×" + sKeep.Height + "）");
+                Check(s125.Width == 725 && s125.Height == 886,
+                    "125% 时代存的 604×738 → 150% 屏上是 " + s125.Width + "×" + s125.Height + "（期望 725×886）");
+                Check(sNone.Width == 0 && sNone.Height == 0,
+                    "没存过尺寸（0）→ 返回 0×0，让程序自己算大小");
+            }
+            catch (Exception exDpi) { Check(false, "高 DPI 断言异常：" + exDpi.Message); }
 
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
