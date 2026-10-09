@@ -1,4 +1,4 @@
-﻿// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
+// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
 //   1) 组内分页：超过 9 个每页 9 格，第 9 格是第 9 个应用（没有「+N」格了）+ 越界格为空
 //   2) 滚轮：停在文件夹上 = 翻内页；不在文件夹上 = 滚分组区（方向与系统一致）
 //   3) 拖动分组：把第 1 个文件夹拖到第 2 个位置，顺序真的换了
@@ -1277,12 +1277,18 @@ namespace BreadLauncher
                 int pm = pbar.IsEmpty ? -1 : (f.Width - 1) - (pbar.Right - 1);
                 int cH = (int)Prop(f, "GroupContentHeight");
                 Rectangle expP = Theme.Scroll.BarRect(f, groupTop, gH, cH, gH, 0);
+                // ★前提：这份配置在这个面板尺寸下**真的需要滚动**，才会画那根条。
+                //   用户的配置是会变的（2026-10-09：他把面板拉宽之后 19 个测试组 5 列就放得下了 →
+                //   压根没有滚动条），那时这几条断言的前提不成立 —— 必须**跳过**，不能报 FAIL
+                //   （和坑 47 同一族：前提不成立要如实记账，别把"没验"混成"验过了"）。
+                bool needScroll = cH > gH;
                 Say("      面板滚动条实测 " + pbar.X + "," + pbar.Y + " " + pbar.Width + "x" + pbar.Height
                     + "（列内命中 " + barHits + " 像素，_groupHeight=" + gH + "）"
                     + "  BarRect=" + expP.X + "," + expP.Y + " " + expP.Width + "x" + expP.Height
                     + "  DPI=" + f.DeviceDpi + "  Ink=" + Theme.Scroll.InkPx(f) + " Margin=" + Theme.Scroll.MarginPx(f)
                     + "  列表 DPI=" + listGeom[0] + " Ink=" + listGeom[1] + " Margin=" + listGeom[2]);
-                Check(pbar.IsEmpty == false && Math.Abs(pbar.X - expP.X) <= 1 && Math.Abs(pbar.Width - expP.Width) <= 1
+                CheckIf(needScroll, "这份配置的内容没超出分组区（" + cH + " ≤ " + gH + "），根本没有滚动条可量",
+                    pbar.IsEmpty == false && Math.Abs(pbar.X - expP.X) <= 1 && Math.Abs(pbar.Width - expP.Width) <= 1
                       && Math.Abs(pbar.Y - expP.Y) <= 1,
                     "面板滚动条真画在 Theme.Scroll.BarRect 指定的位置（实测 " + pbar.X + "," + pbar.Y + " " + pbar.Width + "x" + pbar.Height
                     + "，期望 " + expP.X + "," + expP.Y + " " + expP.Width + "x" + expP.Height + "，±1px 是抗锯齿边缘）");
@@ -1308,7 +1314,8 @@ namespace BreadLauncher
                     for (int i = 0; i < 4; i++) Wheel(f, -30);               // 触控板式碎 Delta，累计正好一格
                     int wy3 = (int)Field(f, "_scrollY");
                     typeof(MainForm).GetField("_hoverGroup", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, -1);
-                    Check(wy3 == pitchW,
+                    CheckIf(maxW >= pitchW, "面板内容不足一行（MaxScroll=" + maxW + " < 行距 " + pitchW + "），落回面板滚动也走不动",
+                        wy3 == pitchW,
                         "文件夹末页上继续滚：落回面板滚动走了 " + wy3 + "px（应为整行 " + pitchW
                         + "，不是按最后一个碎 Delta 算的 " + Theme.Scroll.WheelPixels(30, pitchW, Theme.Scroll.GridRowsPerNotch) + "px）");
                 }
@@ -1320,7 +1327,8 @@ namespace BreadLauncher
                 int zoneOnBar = (int)rz3.Invoke(f, new object[] { new Point(pbar.X + 1, probeY) });
                 int zoneInside = (int)rz3.Invoke(f, new object[] { new Point(pbar.X - Theme.Scroll.InkPx(f) - Theme.Px(f, 2), probeY) });
                 int zoneOuter = (int)rz3.Invoke(f, new object[] { new Point(f.Width - 1, probeY) });
-                Check(zoneOnBar == 0 && (zoneInside & 8) != 0 && (zoneOuter & 8) != 0,
+                CheckIf(needScroll, "这份配置根本没有滚动条（内容没超出分组区），验不了「滚动条那几列不许被缩放带吃掉」",
+                    zoneOnBar == 0 && (zoneInside & 8) != 0 && (zoneOuter & 8) != 0,
                     "点分组区滚动条那几列（x=" + (pbar.X + 1) + "）不会变成「拉窗口大小」（zone=" + zoneOnBar
                     + "）；条左边 4px 仍能拉（zone=" + zoneInside + "）、最外面 1px 也能拉（zone=" + zoneOuter + "）");
 
@@ -1330,7 +1338,8 @@ namespace BreadLauncher
                 downM2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pbar.X + 1, probeY, 0) });
                 bool resizing = (bool)Field(f, "_panelResizing");
                 upM2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pbar.X + 1, probeY, 0) });
-                Check(resizing == false && f.Width == bwBefore && f.Height == bhBefore,
+                CheckIf(needScroll, "这份配置根本没有滚动条（内容没超出分组区），验不了「在滚动条上按下」",
+                    resizing == false && f.Width == bwBefore && f.Height == bhBefore,
                     "在滚动条上按下 → 不进缩放状态（_panelResizing=" + resizing + "）、面板尺寸不变（"
                     + bwBefore + "x" + bhBefore + " → " + f.Width + "x" + f.Height + "）—— 也就不会落盘改用户配置");
             }
@@ -2400,6 +2409,63 @@ namespace BreadLauncher
             }
             catch (Exception exDpi) { Check(false, "高 DPI 断言异常：" + exDpi.Message); }
 
+            // ============================================================
+            // ⑭ ★悬停指针：用**用户自己指针方案里**那只手，而不是 Windows 通用手型
+            //    （用户 2026-10-07 报「移到文件夹上变成一个很小的手指鼠标」：通用手型在 48×48 画布里
+            //     墨迹只有 25×33（36%），而他的方案指针是 32×32、被 Windows 拉伸到 48 显示 ——
+            //     两者一对比就像"指针缩小了"。见 dev-notes 坑 51。）
+            // ============================================================
+            try
+            {
+                Check(Theme.SchemeCursor("__不存在的角色__", Cursors.Default) == Cursors.Default,
+                    "读不到的角色 / 机器上没这个方案 → 原样退回调用方给的默认指针（不会给 null）");
+                Cursor handCur = Theme.HandCursor();
+                Check(handCur != null, "悬停手型拿得到（不是 null）");
+                Check(Theme.HandCursor() == handCur && Theme.SchemeCursor("Hand", Cursors.Hand) == handCur,
+                    "同一个角色只解析一次（有缓存）：两次拿到的是同一个实例");
+
+                string rolePath = null;
+                try
+                {
+                    using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Cursors"))
+                        if (k != null) { object v = k.GetValue("Hand"); rolePath = v == null ? null : v.ToString(); }
+                    if (!string.IsNullOrEmpty(rolePath)) rolePath = Environment.ExpandEnvironmentVariables(rolePath);
+                }
+                catch (Exception) { }
+
+                bool hasScheme = !string.IsNullOrEmpty(rolePath) && System.IO.File.Exists(rolePath);
+                CheckIf(hasScheme, "这台机器的指针方案里没有自定义「Hand」（用的是 Windows 默认），这一条验不了",
+                    Near(CursorPixels(handCur, 48), CursorPixels(Cursors.Hand, 48), 3) == false,
+                    "★悬停手型真的是**方案里那只手**，不是 Windows 通用手型（方案文件 " + rolePath + "）");
+
+                FlatButton fbCur = new FlatButton();
+                Check(fbCur.Cursor != null && fbCur.Cursor == Theme.HandCursor(),
+                    "底栏按钮的指针和悬停格子是**同一个**（都走 Theme.HandCursor，实测 "
+                    + (fbCur.Cursor == null ? "null" : fbCur.Cursor.Size.ToString()) + "）");
+                fbCur.Dispose();
+
+                // ★悬停路径本身也要验：把鼠标"移"到第一个文件夹格子中心 / 再移开，看 Form.Cursor 变成了什么。
+                //   （光标不是窗口画出来的东西，截图里根本没有它 —— 所以只能这样断言，见 dev-notes 坑 51）
+                MethodInfo mmCur = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                int curGx = (int)Field(f, "_groupLeft"), curGy = (int)Field(f, "_groupTop");
+                int curTw = (int)Prop(f, "TileW"), curTh = (int)Prop(f, "TileH");
+                Point overTile = new Point(curGx + curTw / 2, curGy + curTh / 2);
+                mmCur.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, overTile.X, overTile.Y, 0) });
+                Check(f.Cursor == Theme.HandCursor(),
+                    "★鼠标移到文件夹上，指针确实换成了**方案里那只手**（点 " + overTile.X + "," + overTile.Y
+                    + "，实测 " + (f.Cursor == null ? "null" : f.Cursor.Size.ToString()) + "）");
+                // 移开的落点要挑**恒空白**的地方：分组区下沿到页脚之间那条 Px(10) 的缝。
+                // （⚠ 别用 (Px(3),Px(3)) 这种角落当"空白"—— 那是边缘缩放带，指针会变成缩放箭头，
+                //   第一版就这么写的，断言当场红了，是**测试点选错**、不是程序错。）
+                int curGh = (int)Field(f, "_groupHeight");
+                Point blankPt = new Point(Theme.Px(f, 60), curGy + curGh + Theme.Px(f, 4));
+                mmCur.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, blankPt.X, blankPt.Y, 0) });
+                Check(f.Cursor == Cursors.Default,
+                    "鼠标移开文件夹（落到空白缝 " + blankPt.X + "," + blankPt.Y + "）→ 指针回到默认箭头（实测 "
+                    + (f.Cursor == null ? "null" : f.Cursor.Size.ToString()) + "）");
+            }
+            catch (Exception exCur) { Check(false, "悬停指针断言异常：" + exCur.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
@@ -2564,6 +2630,33 @@ namespace BreadLauncher
         private static void Check(bool cond, string what)        {
             if (cond == false) _ok = false;
             Say((cond ? "[PASS] " : "[FAIL] ") + what);
+        }
+
+        /// <summary>把一个**指针**按 size×size 画出来、取原始像素 —— 用来比两个指针是不是同一个图形
+        /// （「悬停用的是用户方案里那只手」这条断言靠它，见 ⑭ 与 dev-notes 坑 51）。
+        /// 和 IconPixels 一个路子：★别比 PNG 字节（编码差异会造成假失败，见坑 49）。</summary>
+        private static byte[] CursorPixels(Cursor c, int size)
+        {
+            if (c == null) return null;
+            try
+            {
+                using (Bitmap b = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (Graphics g = Graphics.FromImage(b))
+                    {
+                        g.Clear(Color.Transparent);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        c.Draw(g, new Rectangle(0, 0, size, size));
+                    }
+                    System.Drawing.Imaging.BitmapData d = b.LockBits(new Rectangle(0, 0, size, size),
+                        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    byte[] px = new byte[d.Stride * size];
+                    System.Runtime.InteropServices.Marshal.Copy(d.Scan0, px, 0, px.Length);
+                    b.UnlockBits(d);
+                    return px;
+                }
+            }
+            catch (Exception) { return null; }
         }
 
         /// <summary>把一个图标按 size×size 画出来、取**原始像素**（BGRA）—— 用来比两张图标是不是同一张

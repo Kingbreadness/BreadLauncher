@@ -1267,14 +1267,18 @@ namespace BreadLauncher
             Cursor zoneCur = gripHot ? Cursors.SizeAll : ZoneCursor(zNow);
             if (index == _hoverGroup && slot == _hoverSlot)
             {
-                Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Cursors.Hand : Cursors.Default);
+                // ★悬停「可点」的格子用**用户自己方案里**的手型（`Theme.HandCursor()`）：
+                //   直接写 Cursors.Hand 的话，用的是 Windows 通用手型 —— 它墨迹只占画布 36%，
+                //   而用户的方案指针是 32×32 被系统拉伸到 48 显示的，两边一对比就像"指针缩小了"
+                //   （用户 2026-10-07 报的「移到文件夹上变成一个很小的手指鼠标」）。
+                Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Theme.HandCursor() : Cursors.Default);
                 base.OnMouseMove(e);
                 return;
             }
             if (index != _hoverGroup) _wheelAcc = 0;   // 换到别的文件夹：别把上一个组攒的零头带过来
             _hoverGroup = index;
             _hoverSlot = slot;
-            Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Cursors.Hand : Cursors.Default);
+            Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Theme.HandCursor() : Cursors.Default);
             Invalidate();
             base.OnMouseMove(e);
         }
@@ -2593,7 +2597,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.11\n\n" +
+                    "BreadLauncher 1.12\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

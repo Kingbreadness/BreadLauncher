@@ -32,7 +32,7 @@ namespace BreadLauncher
                    | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
             Font = Theme.Ui(9.75f);
-            Cursor = Cursors.Hand;
+            Cursor = Theme.HandCursor();    // ★用**用户自己方案里**的手型（别写死 Cursors.Hand，那只是 Windows 通用手型）
             TabStop = false;
         }
 
