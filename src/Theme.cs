@@ -200,54 +200,12 @@ namespace BreadLauncher
             return PxFor(RealDpi(c), v);
         }
 
-        /// <summary>指针缓存：角色 → 指针（null = 这个角色读不到，下次直接退回，别反复摸注册表）。</summary>
-        private static readonly Dictionary<string, Cursor> CursorCache = new Dictionary<string, Cursor>(StringComparer.OrdinalIgnoreCase);
-
-        /// <summary>
-        /// 从**用户自己的指针方案**里取一个指针（`HKCU\Control Panel\Cursors\<role>`，比如 `Hand` / `SizeAll`）。
-        /// 读不到 / 文件不在 / 解析失败 → 返回 `fallback`。
-        /// ★为什么要这个（2026-10-07 用户报「移到文件夹上变成一个很小的手指鼠标」）：
-        ///   直接写 `Cursors.Hand` 用的是 **Windows 通用手型**，它在 48×48 画布里墨迹只有 25×33（占 36%）；
-        ///   而用户方案里那只手是 32×32 的文件、Windows 在 150% 下把它**拉伸到 48×48** 显示（墨迹撑满）——
-        ///   两者摆在一起，就像"指针一悬停就缩小了"。用方案里的那个，就和系统其它地方**完全一致**。
-        /// ⚠ 缓存按角色记：用户在**本次会话里**改指针方案不会立刻生效
-        ///   （面板本来就是用完就关的东西，不值当去监听 WM_SETTINGCHANGE）。
-        /// </summary>
-        public static Cursor SchemeCursor(string role, Cursor fallback)
-        {
-            if (string.IsNullOrEmpty(role)) return fallback;
-            lock (CursorCache)
-            {
-                Cursor hit;
-                if (CursorCache.TryGetValue(role, out hit)) return hit ?? fallback;
-
-                Cursor made = null;
-                try
-                {
-                    using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Cursors"))
-                    {
-                        object v = k == null ? null : k.GetValue(role);
-                        string path = v == null ? null : v.ToString();
-                        // 这个角色可能是空的（比如 Cross 常常没设），也可能是 "%SystemRoot%\cursors\xxx.cur" 这种写法
-                        if (!string.IsNullOrEmpty(path))
-                        {
-                            path = Environment.ExpandEnvironmentVariables(path);
-                            if (System.IO.File.Exists(path)) made = new Cursor(path);
-                        }
-                    }
-                }
-                catch (Exception) { made = null; }      // 文件坏了 / 权限问题 → 一律当"读不到"
-
-                CursorCache[role] = made;                // null 也记下来，别每次悬停都去读注册表
-                return made ?? fallback;
-            }
-        }
-
-        /// <summary>悬停「可点」的东西（文件夹格子 / 底栏按钮）时用的指针：优先用户方案里的那只手。</summary>
-        public static Cursor HandCursor()
-        {
-            return SchemeCursor("Hand", Cursors.Hand);
-        }
+        // ★这里曾经有个 `SchemeCursor(role, fallback)` / `HandCursor()`（读用户指针方案里的手型），
+        //   2026-10-09 用户拍板**不要换鼠标指针**之后删掉了 —— 两版都被他否掉：
+        //   ① `Cursors.Hand`（Windows 通用手型）墨迹只占画布 36%，他看着"很小"；
+        //   ② 读他自己方案里那只手（`HKCU\Control Panel\Cursors\Hand`，一只暗色的"弩"）更糟：
+        //      不透明区域平均亮度只有 65/255，落在深色面板上就是"黑乎乎一团"（用户原话「怎么是黑色的」）。
+        //   ⇒ 面板上一切保持系统默认箭头。**别再把这套加回来**；真要加先问用户（见 docs\dev-notes.md 坑 51）。
 
         public static GraphicsPath Round(Rectangle r, int radius)
         {

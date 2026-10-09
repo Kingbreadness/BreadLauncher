@@ -1267,18 +1267,22 @@ namespace BreadLauncher
             Cursor zoneCur = gripHot ? Cursors.SizeAll : ZoneCursor(zNow);
             if (index == _hoverGroup && slot == _hoverSlot)
             {
-                // ★悬停「可点」的格子用**用户自己方案里**的手型（`Theme.HandCursor()`）：
-                //   直接写 Cursors.Hand 的话，用的是 Windows 通用手型 —— 它墨迹只占画布 36%，
-                //   而用户的方案指针是 32×32 被系统拉伸到 48 显示的，两边一对比就像"指针缩小了"
-                //   （用户 2026-10-07 报的「移到文件夹上变成一个很小的手指鼠标」）。
-                Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Theme.HandCursor() : Cursors.Default);
+                // ★悬停文件夹时**不再换手型**（2026-10-09 用户拍板：「就不能不改鼠标吗,不变就是了」）。
+                //   走过的两版都被他否掉了：
+                //   ① 写 `Cursors.Hand` = Windows 通用手型 → 他那只自定义指针是 32×32 被系统拉伸到 48 显示的，
+                //      通用手型墨迹只占画布 36% → 一悬停就像"指针缩小了"；
+                //   ② 改成读他**自己方案里**的手型（`HKCU\Control Panel\Cursors\Hand`）→ 他那只"弩"本身很暗
+                //      （不透明区域平均亮度只有 65/255），落在深色面板上就是"黑乎乎一团"，比①还难看。
+                //   ⇒ 结论：**面板上保持系统默认箭头不变**（悬停本来就有高亮，够提示了）。
+                //   ⚠ 别再把这条改回手型；要改先问用户（坑 51）。
+                Cursor = zoneCur != null ? zoneCur : Cursors.Default;
                 base.OnMouseMove(e);
                 return;
             }
             if (index != _hoverGroup) _wheelAcc = 0;   // 换到别的文件夹：别把上一个组攒的零头带过来
             _hoverGroup = index;
             _hoverSlot = slot;
-            Cursor = zoneCur != null ? zoneCur : (index >= 0 ? Theme.HandCursor() : Cursors.Default);
+            Cursor = zoneCur != null ? zoneCur : Cursors.Default;
             Invalidate();
             base.OnMouseMove(e);
         }
@@ -2597,7 +2601,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.12\n\n" +
+                    "BreadLauncher 1.13\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

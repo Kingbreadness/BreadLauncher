@@ -32,7 +32,8 @@ namespace BreadLauncher
                    | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
             Font = Theme.Ui(9.75f);
-            Cursor = Theme.HandCursor();    // ★用**用户自己方案里**的手型（别写死 Cursors.Hand，那只是 Windows 通用手型）
+            // ★**故意不设 Cursor**（= 系统默认箭头）：2026-10-09 用户拍板「不变就是了」——
+            //   通用手型看着小、他自己方案里那只手又太暗（深色面板上像黑疙瘩），两版都被否了（见坑 51）。
             TabStop = false;
         }
 

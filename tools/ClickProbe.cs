@@ -1,4 +1,4 @@
-// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
+﻿// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
 //   1) 组内分页：超过 9 个每页 9 格，第 9 格是第 9 个应用（没有「+N」格了）+ 越界格为空
 //   2) 滚轮：停在文件夹上 = 翻内页；不在文件夹上 = 滚分组区（方向与系统一致）
 //   3) 拖动分组：把第 1 个文件夹拖到第 2 个位置，顺序真的换了
@@ -2295,7 +2295,7 @@ namespace BreadLauncher
                         + "）—— 不作废的话，下一次**右键**会被「移动超过 3px 就不算点击」误伤，菜单弹不出来");
                 }
             }
-            catch (Exception exDv) { Check(false, "拖动后右键断言异常：" + exDv.Message); }
+            catch (Exception exDv) { Check(false, "拖动后右键断言异常：" + Why(exDv)); }
 
             // ============================================================
             // ⑪ ★「刷新应用列表」的落点（用户 2026-10-01 的要求）—— **放在最后、不设前提**
@@ -2410,61 +2410,44 @@ namespace BreadLauncher
             catch (Exception exDpi) { Check(false, "高 DPI 断言异常：" + exDpi.Message); }
 
             // ============================================================
-            // ⑭ ★悬停指针：用**用户自己指针方案里**那只手，而不是 Windows 通用手型
-            //    （用户 2026-10-07 报「移到文件夹上变成一个很小的手指鼠标」：通用手型在 48×48 画布里
-            //     墨迹只有 25×33（36%），而他的方案指针是 32×32、被 Windows 拉伸到 48 显示 ——
-            //     两者一对比就像"指针缩小了"。见 dev-notes 坑 51。）
+            // ⑭ ★鼠标指针：悬停文件夹 / 底栏按钮时**保持系统默认箭头，不换手型**
+            //    （用户 2026-10-09 拍板：「就不能不改鼠标吗,不变就是了」。两版手型都被他否掉：
+            //     ① Windows 通用手型他嫌"很小"（墨迹只占 48×48 画布的 36%）；
+            //     ② 读他自己方案里那只手更糟 —— 他那只"弩"不透明区域平均亮度只有 65/255，
+            //        落在深色面板上就是"黑乎乎一团"（用户原话「怎么是黑色的」）。见 dev-notes 坑 51。）
+            //    ⚠ 光标不是窗口画出来的东西，**截图里根本没有它** —— 只能靠这几条断言。
             // ============================================================
             try
             {
-                Check(Theme.SchemeCursor("__不存在的角色__", Cursors.Default) == Cursors.Default,
-                    "读不到的角色 / 机器上没这个方案 → 原样退回调用方给的默认指针（不会给 null）");
-                Cursor handCur = Theme.HandCursor();
-                Check(handCur != null, "悬停手型拿得到（不是 null）");
-                Check(Theme.HandCursor() == handCur && Theme.SchemeCursor("Hand", Cursors.Hand) == handCur,
-                    "同一个角色只解析一次（有缓存）：两次拿到的是同一个实例");
-
-                string rolePath = null;
-                try
-                {
-                    using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Cursors"))
-                        if (k != null) { object v = k.GetValue("Hand"); rolePath = v == null ? null : v.ToString(); }
-                    if (!string.IsNullOrEmpty(rolePath)) rolePath = Environment.ExpandEnvironmentVariables(rolePath);
-                }
-                catch (Exception) { }
-
-                bool hasScheme = !string.IsNullOrEmpty(rolePath) && System.IO.File.Exists(rolePath);
-                CheckIf(hasScheme, "这台机器的指针方案里没有自定义「Hand」（用的是 Windows 默认），这一条验不了",
-                    Near(CursorPixels(handCur, 48), CursorPixels(Cursors.Hand, 48), 3) == false,
-                    "★悬停手型真的是**方案里那只手**，不是 Windows 通用手型（方案文件 " + rolePath + "）");
-
-                FlatButton fbCur = new FlatButton();
-                Check(fbCur.Cursor != null && fbCur.Cursor == Theme.HandCursor(),
-                    "底栏按钮的指针和悬停格子是**同一个**（都走 Theme.HandCursor，实测 "
-                    + (fbCur.Cursor == null ? "null" : fbCur.Cursor.Size.ToString()) + "）");
-                fbCur.Dispose();
-
-                // ★悬停路径本身也要验：把鼠标"移"到第一个文件夹格子中心 / 再移开，看 Form.Cursor 变成了什么。
-                //   （光标不是窗口画出来的东西，截图里根本没有它 —— 所以只能这样断言，见 dev-notes 坑 51）
                 MethodInfo mmCur = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
                 int curGx = (int)Field(f, "_groupLeft"), curGy = (int)Field(f, "_groupTop");
                 int curTw = (int)Prop(f, "TileW"), curTh = (int)Prop(f, "TileH");
                 Point overTile = new Point(curGx + curTw / 2, curGy + curTh / 2);
                 mmCur.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, overTile.X, overTile.Y, 0) });
-                Check(f.Cursor == Theme.HandCursor(),
-                    "★鼠标移到文件夹上，指针确实换成了**方案里那只手**（点 " + overTile.X + "," + overTile.Y
-                    + "，实测 " + (f.Cursor == null ? "null" : f.Cursor.Size.ToString()) + "）");
-                // 移开的落点要挑**恒空白**的地方：分组区下沿到页脚之间那条 Px(10) 的缝。
-                // （⚠ 别用 (Px(3),Px(3)) 这种角落当"空白"—— 那是边缘缩放带，指针会变成缩放箭头，
-                //   第一版就这么写的，断言当场红了，是**测试点选错**、不是程序错。）
+                Check(f.Cursor == Cursors.Default,
+                    "★鼠标移到文件夹上，指针**不变**（还是系统默认箭头；实测 " + f.Cursor.Size
+                    + "）—— 用户明确要求的就是「不变」");
+
+                FlatButton fbCur = new FlatButton();
+                Check(fbCur.Cursor == Cursors.Default,
+                    "底栏按钮的指针也是系统默认箭头（实测 " + fbCur.Cursor.Size + "）");
+                fbCur.Dispose();
+
+                // 空白处（分组区下沿到页脚之间那条恒空的缝）当然也得是默认箭头。
+                // ⚠ 别拿 (Px(3),Px(3)) 那种角落当"空白"：那是边缘缩放带，指针会变成缩放箭头。
                 int curGh = (int)Field(f, "_groupHeight");
                 Point blankPt = new Point(Theme.Px(f, 60), curGy + curGh + Theme.Px(f, 4));
                 mmCur.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, blankPt.X, blankPt.Y, 0) });
                 Check(f.Cursor == Cursors.Default,
-                    "鼠标移开文件夹（落到空白缝 " + blankPt.X + "," + blankPt.Y + "）→ 指针回到默认箭头（实测 "
-                    + (f.Cursor == null ? "null" : f.Cursor.Size.ToString()) + "）");
+                    "空白处同样是默认箭头（实测 " + f.Cursor.Size + "）");
+
+                // ★唯一的例外要钉住：边缘缩放带**必须**还是缩放指针（不然用户不知道自己在拉窗口）。
+                //   （别写成 `|| f.Cursor.Size.Width > 0` 那种恒真条件 —— 项目里踩过「恒真断言放过真回归」的坑。）
+                mmCur.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, f.Width - 3, f.Height / 2, 0) });
+                Check(f.Cursor != Cursors.Default,
+                    "（例外）面板右边缘仍是**缩放指针**（实测 " + f.Cursor.Size + "）—— 边上要能看出可以拉窗口");
             }
-            catch (Exception exCur) { Check(false, "悬停指针断言异常：" + exCur.Message); }
+            catch (Exception exCur) { Check(false, "鼠标指针断言异常：" + Why(exCur)); }
 
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
@@ -2632,31 +2615,16 @@ namespace BreadLauncher
             Say((cond ? "[PASS] " : "[FAIL] ") + what);
         }
 
-        /// <summary>把一个**指针**按 size×size 画出来、取原始像素 —— 用来比两个指针是不是同一个图形
-        /// （「悬停用的是用户方案里那只手」这条断言靠它，见 ⑭ 与 dev-notes 坑 51）。
-        /// 和 IconPixels 一个路子：★别比 PNG 字节（编码差异会造成假失败，见坑 49）。</summary>
-        private static byte[] CursorPixels(Cursor c, int size)
+        /// <summary>把反射调用抛出的异常**展开成人能看的字符串**：`TargetInvocationException` 会把真正的异常
+        /// 藏在 `InnerException` 里，只报外层的话日志里永远是「调用的目标发生了异常」——等于没线索。
+        /// ★这个坑真踩过（2026-10-09，scroll 配置两条断言同时红，全靠它才看出真因）。</summary>
+        private static string Why(Exception ex)
         {
-            if (c == null) return null;
-            try
-            {
-                using (Bitmap b = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
-                {
-                    using (Graphics g = Graphics.FromImage(b))
-                    {
-                        g.Clear(Color.Transparent);
-                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                        c.Draw(g, new Rectangle(0, 0, size, size));
-                    }
-                    System.Drawing.Imaging.BitmapData d = b.LockBits(new Rectangle(0, 0, size, size),
-                        System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                    byte[] px = new byte[d.Stride * size];
-                    System.Runtime.InteropServices.Marshal.Copy(d.Scan0, px, 0, px.Length);
-                    b.UnlockBits(d);
-                    return px;
-                }
-            }
-            catch (Exception) { return null; }
+            Exception e = ex;
+            int guard = 0;
+            while (e is System.Reflection.TargetInvocationException && e.InnerException != null && guard++ < 8)
+                e = e.InnerException;
+            return e.GetType().Name + "：" + e.Message;
         }
 
         /// <summary>把一个图标按 size×size 画出来、取**原始像素**（BGRA）—— 用来比两张图标是不是同一张
