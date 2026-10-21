@@ -1080,20 +1080,19 @@ namespace BreadLauncher
                             Theme.DrawText(g, cellApp.DisplayName, Theme.Ui(6.5f), nameR, Theme.TextSecondary,
                                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
-                        // ★组内拖图标排序的反馈（2026-10-21）：来源格压暗、目标格描一圈强调色
-                        if (_iconDrag && _dragActive && _iconDragGroup == i)
-                        {
-                            if (s == _iconDragFrom)
-                                Theme.FillRound(g, cell, corner, Color.FromArgb(120, 10, 10, 10));
-                            else if (s == _iconDragTo)
-                                Theme.DrawRound(g, cell, corner, Theme.Accent, 2f);
-                        }
+                        // ★组内拖图标排序的反馈（2026-10-21）：来源格压暗（目标格在循环外画，支持空格子）
+                        if (_iconDrag && _dragActive && _iconDragGroup == i && s == _iconDragFrom)
+                            Theme.FillRound(g, cell, corner, Color.FromArgb(120, 10, 10, 10));
 
                         // ★鼠标停在这个小图标上 → 在它下面显示应用名（面板里原本只有图标、没有名字）。
                         //   用自定义显示名（右键 →「重命名…」改的就是它）。
                         if (_hoverGroup == i && _hoverSlot == s && HoverNamesOn)
                             DrawHoverName(g, gv.Apps[idx].DisplayName, cell);
                     }
+
+                    // ★拖图标的目标格描一圈强调色（单独画：目标可能是本页的空格子，循环里碰不到）
+                    if (_iconDrag && _dragActive && _iconDragGroup == i && _iconDragTo >= 0 && _iconDragTo != _iconDragFrom)
+                        Theme.DrawRound(g, MiniCellRect(i, _iconDragTo), corner, Theme.Accent, 2f);
 
                     // 分页指示：超过 9 个就在文件夹底部画一排小点（滚轮在文件夹上滚 = 翻页）
                     int pages = PageCount(gv);
@@ -1273,33 +1272,40 @@ namespace BreadLauncher
         }
 
         /// <summary>
-        /// 鼠标在**某个文件夹的 3×3 图标区**里，对应哪一格（0~8）。拖图标排序时用它算落点。
-        /// ★2026-10-21 新增。算法和 GroupHitTest 里那段小图标命中一模一样（同一套 MiniPad/MiniBox/MiniGap），
-        /// 只是这里对「落在缝里」做了**取最近一格**的宽容（拖拽时没必要叫人找准缝）。
+        /// 某个文件夹里、本页第 slot 格小图标的**客户区矩形**（画图和拖拽命中共用同一份几何）。
         /// </summary>
-        private int IconSlotAt(int groupIndex, Point p)
+        private Rectangle MiniCellRect(int groupIndex, int slot)
         {
-            if (groupIndex < 0 || groupIndex >= _groups.Count) return -1;
-            GroupView gv = _groups[groupIndex];
-            int page = PageOf(gv);
-            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - page * FolderCapacity));
-            if (countOnPage <= 0) return -1;
             int cols = Columns;
             int tw = TileW;
             int x = _groupLeft + (groupIndex % cols) * (tw + GapX);
             int y = _groupTop + (groupIndex / cols) * (TileH + GapY) - _scrollY;
-            int step = MiniBox + MiniGap;
-            int mx = p.X - x - MiniPad;
-            int my = p.Y - y - MiniPad;
-            int ci = (mx + step / 2) / step;      // 四舍五入到最近的列
-            int ri = (my + step / 2) / step;
-            if (ci < 0) ci = 0;
-            if (ci > 2) ci = 2;
-            if (ri < 0) ri = 0;
-            if (ri > 2) ri = 2;
-            int slot = ri * 3 + ci;
-            if (slot >= countOnPage) slot = countOnPage - 1;
-            return slot;
+            int mr = slot / 3, mc = slot % 3;
+            return new Rectangle(x + MiniPad + mc * (MiniBox + MiniGap),
+                                 y + MiniPad + mr * (MiniBox + MiniGap),
+                                 MiniBox, MiniBox);
+        }
+
+        /// <summary>
+        /// 拖图标时，鼠标现在指向本页第几格。
+        /// ★2026-10-21 精准化（用户要求「优化拖拽精准度」）：
+        ///   ① 只认**图标本体的矩形**，不再「取最近一格」——手指还在缝里时落点**不会提前跳**；
+        ///   ② 落在缝里 / 卡片外面 → 返回 **-2**，调用方保持上一次的目标（手不抖就不会乱跳）；
+        ///   ③ 允许落在**本页的空格子**上（移到本页末尾）。
+        /// </summary>
+        /// <returns>-1 = 这页没东西；-2 = 没指到具体格子（保持上次目标）；>=0 = 目标格</returns>
+        private int IconSlotAt(int groupIndex, Point p)
+        {
+            if (groupIndex < 0 || groupIndex >= _groups.Count) return -2;
+            GroupView gv = _groups[groupIndex];
+            int page = PageOf(gv);
+            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - page * FolderCapacity));
+            if (countOnPage <= 0) return -1;
+            for (int slot = 0; slot < FolderCapacity; slot++)
+            {
+                if (MiniCellRect(groupIndex, slot).Contains(p)) return slot;
+            }
+            return -2;
         }
 
         /// <summary>
@@ -1312,11 +1318,16 @@ namespace BreadLauncher
             if (groupIndex < 0 || groupIndex >= _groups.Count) return;
             GroupView gv = _groups[groupIndex];
             int baseIdx = PageOf(gv) * FolderCapacity;
+            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - baseIdx));
+            if (countOnPage <= 0) return;
+            if (fromSlot < 0 || fromSlot >= countOnPage) return;
+            if (toSlot < 0 || toSlot >= FolderCapacity) return;
             int a = baseIdx + fromSlot;
-            int b = baseIdx + toSlot;
-            if (a < 0 || b < 0 || a >= gv.Apps.Count || b >= gv.Apps.Count || a == b) return;
+            int b = baseIdx + Math.Min(toSlot, countOnPage - 1);   // 落在空格子上 = 移到本页末尾
+            if (a >= gv.Apps.Count || a == b) return;
             AppEntry moved = gv.Apps[a];
             gv.Apps.RemoveAt(a);
+            if (b > gv.Apps.Count) b = gv.Apps.Count;
             gv.Apps.Insert(b, moved);
             if (gv.Group != null)
             {
@@ -1490,7 +1501,7 @@ namespace BreadLauncher
                 if (_dragActive)
                 {
                     int to = IconSlotAt(_iconDragGroup, e.Location);
-                    if (to != _iconDragTo) { _iconDragTo = to; Invalidate(); }
+                    if (to >= 0 && to != _iconDragTo) { _iconDragTo = to; Invalidate(); }   // -2 = 指在缝里，保持上次目标
                     Cursor = Cursors.SizeAll;
                     base.OnMouseMove(e);
                     return;
@@ -1769,7 +1780,7 @@ namespace BreadLauncher
             int digit = 0;
             if (e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9) digit = e.KeyCode - Keys.D0;
             else if (e.KeyCode >= Keys.NumPad1 && e.KeyCode <= Keys.NumPad9) digit = e.KeyCode - Keys.NumPad0;
-            if (digit > 0 && PreviewMode == false && _modalOpen == false)
+            if (digit > 0 && DigitQuickLaunchOn && PreviewMode == false && _modalOpen == false)
             {
                 AppEntry quick = AppForDigit(digit);
                 if (quick != null)
@@ -2785,6 +2796,7 @@ namespace BreadLauncher
             // ★2026-10-21 用户要求：**把「亚克力半透明」那个开关从菜单里去掉**（原话：「我建议是把那个关掉透明的按钮去掉吧，我就感觉透明最好看」）。
             //   以后永远开着：老配置里存的 `Acrylic=false` 也在 OnLoad 里强制改回 true。
             menu.Items.Add(ToggleItem("鼠标悬停显示名字", _settings.HoverNames, delegate { ToggleHoverNames(); }));
+            menu.Items.Add(ToggleItem("数字键 1~9 快启", _settings.DigitQuickLaunch, delegate { ToggleDigitQuickLaunch(); }));
             menu.Items.Add(ToggleItem("启动应用后关闭面板", _settings.CloseAfterLaunch, delegate { ToggleCloseAfterLaunch(); }));
 
 
@@ -2851,6 +2863,21 @@ namespace BreadLauncher
             Invalidate();
         }
 
+        /// <summary>数字键 1~9 快启的开关（默认关，用户 2026-10-21 要求）。</summary>
+        private void ToggleDigitQuickLaunch()
+        {
+            if (_settings == null) return;
+            _settings.DigitQuickLaunch = !_settings.DigitQuickLaunch;
+            PersistSettings();
+            Invalidate();
+        }
+
+        /// <summary>数字键快启到底开没开（探针要断言默认关）。</summary>
+        private bool DigitQuickLaunchOn
+        {
+            get { return _settings != null && _settings.DigitQuickLaunch; }
+        }
+
         private void ClearIcons()
         {
             lock (this) { _iconGen++; _pendingIcons = 0; }   // 换代：在途的取图回调作废（和 RefreshAppList 一样）
@@ -2884,7 +2911,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.19\n\n" +
+                    "BreadLauncher 1.20\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

@@ -232,6 +232,15 @@ namespace BreadLauncher
                 try
                 {
                     MethodInfo appForDigit = typeof(MainForm).GetMethod("AppForDigit", BindingFlags.NonPublic | BindingFlags.Instance);
+                    PropertyInfo digitOn = typeof(MainForm).GetProperty("DigitQuickLaunchOn", BindingFlags.NonPublic | BindingFlags.Instance);
+                    Settings stDigit = (Settings)Field(f, "_settings");
+                    bool digitDefaultOff = (bool)digitOn.GetValue(f, null) == false;
+                    stDigit.DigitQuickLaunch = true;
+                    bool digitCanTurnOn = (bool)digitOn.GetValue(f, null) == true;
+                    stDigit.DigitQuickLaunch = false;
+                    Check(digitDefaultOff && digitCanTurnOn,
+                        "数字键 1~9 快启默认是**关**的（用户 2026-10-21 要求），且能在设置里开起来（默认="
+                        + (digitDefaultOff ? "关 OK" : "开 ★不对") + "、开开关后=" + (digitCanTurnOn ? "开 OK" : "没生效") + "）");
                     setPageM.Invoke(f, new object[] { gv, 0 });
                     hoverF.SetValue(f, groupIndex);
                     AppEntry q1 = (AppEntry)appForDigit.Invoke(f, new object[] { 1 });
@@ -279,6 +288,25 @@ namespace BreadLauncher
                     else NoteSkip("这组不足 2 个应用，测不了「组内拖图标排序」");
                 }
                 catch (Exception exReorder) { Check(false, "组内拖图标排序断言异常：" + exReorder.Message); }
+
+                // ★拖拽精准度：指在图标中心 = 对应格；指在两个图标之间的缝里 = -2（保持上次目标，不提前跳格）
+                try
+                {
+                    MethodInfo slotAt = typeof(MainForm).GetMethod("IconSlotAt", BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo cellRect = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                    Rectangle r0 = (Rectangle)cellRect.Invoke(f, new object[] { groupIndex, 0 });
+                    Rectangle r1 = (Rectangle)cellRect.Invoke(f, new object[] { groupIndex, 1 });
+                    Point c0p = new Point(r0.X + r0.Width / 2, r0.Y + r0.Height / 2);
+                    Point c1p = new Point(r1.X + r1.Width / 2, r1.Y + r1.Height / 2);
+                    Point gapP = new Point(r0.Right + (r1.Left - r0.Right) / 2, r0.Y + r0.Height / 2);
+                    int s0 = (int)slotAt.Invoke(f, new object[] { groupIndex, c0p });
+                    int s1 = (int)slotAt.Invoke(f, new object[] { groupIndex, c1p });
+                    int sg = (int)slotAt.Invoke(f, new object[] { groupIndex, gapP });
+                    Check(s0 == 0 && s1 == 1 && sg == -2,
+                        "拖图标精准度：图标中心 → 对应格（实测 " + s0 + " / " + s1
+                        + "）；落在两个图标之间的缝里 → 保持上次目标、不提前跳格（实测 " + sg + "，要求 -2）");
+                }
+                catch (Exception exSlot) { Check(false, "拖拽精准度断言异常：" + exSlot.Message); }
 
                 // ★★端到端：真模拟「按下图标 → 拖到另一格 → 松手」，顺序必须真的换
                 try
@@ -1728,7 +1756,7 @@ namespace BreadLauncher
                     //   （以前是「亚克力半透明：关」=「点一下会关掉」，用户反馈分不清状态还是动作）
                     ContextMenuStrip sm = f.BuildSettingsMenu();
                     string stexts = "";
-                    bool acrylicItem = false, hoverOk = false, closeOk = false;
+                    bool acrylicItem = false, hoverOk = false, closeOk = false, digitOk = false;
                     for (int i = 0; i < sm.Items.Count; i++)
                     {
                         string tx = sm.Items[i].Text;
@@ -1738,6 +1766,7 @@ namespace BreadLauncher
                         if (tx.StartsWith("亚克力半透明")) acrylicItem = true;   // ★2026-10-21 用户要求去掉这个开关
                         if (tx.StartsWith("鼠标悬停显示名字")) hoverOk = (ck == stName.HoverNames) && tx.EndsWith(ck ? "已开启" : "已关闭");
                         if (tx.StartsWith("启动应用后关闭面板")) closeOk = (ck == stName.CloseAfterLaunch) && tx.EndsWith(ck ? "已开启" : "已关闭");
+                        if (tx.StartsWith("数字键 1~9 快启")) digitOk = (ck == stName.DigitQuickLaunch) && tx.EndsWith(ck ? "已开启" : "已关闭");
                     }
                     try
                     {
@@ -1754,9 +1783,9 @@ namespace BreadLauncher
                     }
                     catch (Exception) { }
                     sm.Dispose();
-                    Check(acrylicItem == false && hoverOk && closeOk,
-                        "设置菜单：**没有亚克力开关**（用户 2026-10-21 要求去掉，透明永远开着）、" +
-                        "另外两个开关打勾与文字都表示**当前状态**（" + stexts + "）");
+                    Check(acrylicItem == false && hoverOk && closeOk && digitOk,
+                        "设置菜单：**没有亚克力开关**（用户 2026-10-21 要求去掉，透明永远开着）；"
+                        + "另外三个开关打勾与文字都表示**当前状态**（" + stexts + "）");
 
                     // ⑨ 启动时**不许弹任何提示**（用户 2026-09-28 明确要求：「第一眼有个弹窗」很烦）。
                     //    亚克力那两条提示（「已开启」和「这台系统不支持」）连同方法一起删掉了 ——

@@ -1,4 +1,4 @@
-﻿// ConfigStore.cs —— 设置与本地缓存的读写（全部放在软件自己目录，不碰 C 盘、不写注册表）
+// ConfigStore.cs —— 设置与本地缓存的读写（全部放在软件自己目录，不碰 C 盘、不写注册表）
 //
 // 为什么不用注册表：用户明确要求「便携、不留后台、不污染系统」。
 // 为什么用 JavaScriptSerializer：.NET Framework 自带，零安装，够用。
@@ -38,6 +38,11 @@ namespace BreadLauncher
         public int PanelDpi = 0;
         /// <summary>是否已经做过「首次运行预置几个常用应用」，做过了就不再自动加，尊重用户取消固定的选择。</summary>
         public bool Seeded = false;
+        /// <summary>
+        /// 数字键 1~9 快启。**默认 false = 关**（2026-10-21 用户要求：功能留着，但得在设置里自己开）。
+        /// 开了之后：鼠标停在哪个文件夹上，按 1~9 就启动那一页的第 N 个应用。
+        /// </summary>
+        public bool DigitQuickLaunch = false;
         /// <summary>启动应用之后要不要关掉面板。**默认 false = 不关**（用户要连着启动好几个应用；
         /// 想恢复老行为就在设置菜单里打开「启动应用后关闭面板」）。旧配置里没有这个字段 → false ✓ 正好是新默认。</summary>
         public bool CloseAfterLaunch = false;
