@@ -17,6 +17,13 @@ namespace BreadLauncher
         public static readonly Color BgTop = Color.FromArgb(38, 38, 38);
         public static readonly Color BgBottom = Color.FromArgb(28, 28, 28);
         public static readonly Color Surface = Color.FromArgb(48, 48, 48);
+
+        /// <summary>
+        /// 文件夹卡片（大文件夹本体）的**不透明度** 0~255。2026-10-21 用户问「文件夹做不到透明嘛」→ 做成半透明：
+        /// 面板背景是逐像素 alpha 的亚克力，卡片再叠一层半透明深灰，就能透出后面的模糊（和 Win11 的亚克力卡片一个意思）。
+        /// ★只有卡片本体用它；文字 / 图标始终是实心的（要看得清）。255 = 老的不透明观感。
+        /// </summary>
+        public static int CardAlpha = 140;
         public static readonly Color SurfaceHover = Color.FromArgb(58, 58, 58);
         public static readonly Color Hover = Color.FromArgb(48, 48, 48);
         public static readonly Color HoverStrong = Color.FromArgb(60, 60, 60);

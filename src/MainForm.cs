@@ -990,8 +990,16 @@ namespace BreadLauncher
                 bool hoverBody = _hoverGroup == i;
 
                 Rectangle box = new Rectangle(x, y, tw, th);
-                Theme.FillRound(g, box, radius, hoverBody ? Theme.SurfaceHover : Theme.Surface);
-                Theme.DrawRound(g, box, radius, Theme.Border, 1f);
+                // ★2026-10-21：卡片本体改成**半透明**（透出后面的亚克力模糊）。
+                //   不透明度在 Theme.CardAlpha；文字/图标仍然实心（不能模糊）。
+                Color cardFill = hoverBody ? Theme.SurfaceHover : Theme.Surface;
+                if (Theme.CardAlpha < 255)
+                    cardFill = Color.FromArgb(Theme.CardAlpha, cardFill.R, cardFill.G, cardFill.B);
+                Theme.FillRound(g, box, radius, cardFill);
+                Color cardEdge = Theme.Border;
+                if (Theme.CardAlpha < 255)
+                    cardEdge = Color.FromArgb(Math.Min(255, Theme.CardAlpha + 40), cardEdge.R, cardEdge.G, cardEdge.B);
+                Theme.DrawRound(g, box, radius, cardEdge, 1f);
 
                 // 拖动反馈：来源压暗，落点描一圈强调色
                 if (_dragActive && _dragFrom == i)
@@ -2734,7 +2742,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.16\n\n" +
+                    "BreadLauncher 1.17\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
