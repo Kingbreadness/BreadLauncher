@@ -1396,6 +1396,10 @@ namespace BreadLauncher
                 GroupHitTest(e.Location, out index, out slot);
                 if (index >= 0)
                 {
+                    // ★2026-10-21 用户报：**空格子会抢掉「拖动整个文件夹」**。
+                    //   小图标区里没有应用的格子不算「图标」：按在上面就当按在**卡片本体**，
+                    //   照常能把整个文件夹拖走（点一下仍然是打开「添加应用」）。
+                    if (slot >= 0 && AppAt(_groups[index], slot) == null) slot = -1;
                     _dragStart = e.Location;
                     _dragActive = false;
                     if (slot >= 0)
@@ -2914,7 +2918,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.21\n\n" +
+                    "BreadLauncher 1.22\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

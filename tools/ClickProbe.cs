@@ -343,6 +343,34 @@ namespace BreadLauncher
                 }
                 catch (Exception exE2E) { Check(false, "组内拖图标端到端断言异常：" + exE2E.Message); }
 
+                // ★★2026-10-21 用户报：**文件夹里的空格子会抢掉「拖整个文件夹」**（按在空格子上应该能拖走）
+                try
+                {
+                    MethodInfo cellRect2 = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                    FieldInfo iconDragF = typeof(MainForm).GetField("_iconDrag", BindingFlags.NonPublic | BindingFlags.Instance);
+                    FieldInfo movingF = typeof(MainForm).GetField("_panelMoving", BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo mmDown2 = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo mmUp2 = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                    int pcNow = (int)pageCountM.Invoke(null, new object[] { gv });
+                    setPageM.Invoke(f, new object[] { gv, pcNow - 1 });
+                    int onLastPage = gv.Apps.Count - (pcNow - 1) * 9;
+                    if (onLastPage > 0 && onLastPage < 9)
+                    {
+                        Rectangle er = (Rectangle)cellRect2.Invoke(f, new object[] { groupIndex, onLastPage });
+                        Point ep = new Point(er.X + er.Width / 2, er.Y + er.Height / 2);
+                        mmDown2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, ep.X, ep.Y, 0) });
+                        bool iconDragEmpty = (bool)iconDragF.GetValue(f);
+                        int dragFromEmpty = (int)Field(f, "_dragFrom");
+                        mmUp2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, ep.X, ep.Y, 0) });
+                        Check(iconDragEmpty == false && dragFromEmpty == groupIndex,
+                            "空格子不算图标：按在文件夹里的空格子上 = 按住卡片本体，能拖整个文件夹"
+                            + "（实测 _iconDrag=" + iconDragEmpty + "、_dragFrom=" + dragFromEmpty + "，期望 " + groupIndex + "）");
+                    }
+                    else NoteSkip("没有「本页有空格子」的组，测不了空格子拖动");
+                    setPageM.Invoke(f, new object[] { gv, 0 });
+                }
+                catch (Exception exEmpty) { Check(false, "空格子拖动断言异常：" + exEmpty.Message); }
+
                 // 顺便把第 2 页的面板截一张（排版改动必须用眼睛看）
                 try
                 {
