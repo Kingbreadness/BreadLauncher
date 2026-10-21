@@ -1571,9 +1571,11 @@ namespace BreadLauncher
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            // 鼠标停在「超过 9 个的大文件夹」上时，滚轮翻这一组的内页（iOS 文件夹那种翻页）；
-            // 翻到头/尾再继续滚，就落回面板自身的滚动，这样两层滚动都不会卡住。
-            int scrollDelta = e.Delta;      // 默认按本次事件的 Delta 折算；翻页攒满一格时改用它（见下）
+            // 鼠标停在「超过 9 个的大文件夹」上时，滚轮**只翻这一组的内页**（iOS 文件夹那种翻页）；
+            // ★2026-10-21 用户要求：翻到头 / 尾就**停住**，不允许落回面板自己的滚动
+            //   （以前是「让给面板滚，两层都不卡」，他原话：「翻到最后一格再滚就是文件夹外面的在滚了」）。
+            //   想滚面板就把鼠标移到空白处。
+            int scrollDelta = e.Delta;      // 不在翻页语境时，按本次事件的 Delta 折算
             if (_hoverGroup >= 0 && _hoverGroup < _groups.Count)
             {
                 GroupView hv = _groups[_hoverGroup];
@@ -1584,9 +1586,6 @@ namespace BreadLauncher
                     _wheelAcc += e.Delta;
                     if (Math.Abs(_wheelAcc) < Theme.Scroll.Notch)
                         return;                       // 还没攒够一格：这次事件就这么消化掉，别半格半格地滚面板
-                    // ★落回面板滚动时要用「攒出来的那一格」，不是最后一个碎 Delta ——
-                    //   否则末页上滚一次只走 1/4 行（既不是整行、看着也像没反应）
-                    scrollDelta = _wheelAcc > 0 ? Theme.Scroll.Notch : -Theme.Scroll.Notch;
                     int dir = _wheelAcc > 0 ? -1 : 1;
                     _wheelAcc = 0;
                     int before = PageOf(hv);
@@ -1595,9 +1594,11 @@ namespace BreadLauncher
                     {
                         _hoverSlot = -2;
                         Invalidate();
-                        return;
                     }
-                    // 已经翻到第一页/最后一页：把这一格让给面板滚动（下面照常走）
+                    // ★2026-10-21 用户要求：**翻到头 / 尾就停住**，不许把这一格让给面板滚动。
+                    //   （以前是「让给面板自身滚动，两层都不卡住」，他原话：「翻到最后一格再滚就是
+                    //   文件夹外面的在滚了，这不太好」）。想滚面板就把鼠标移到空白处。
+                    return;
                 }
             }
             _wheelAcc = 0;   // 不在翻页语境里：别把零头留到下次
@@ -2751,7 +2752,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.14\n\n" +
+                    "BreadLauncher 1.15\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

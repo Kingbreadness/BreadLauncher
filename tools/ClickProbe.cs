@@ -199,6 +199,22 @@ namespace BreadLauncher
                 Check(afterDown == 1 && afterUp == 0,
                     "滚轮停在文件夹上翻页：向下 → 第 " + (afterDown + 1) + " 页，向上 → 第 " + (afterUp + 1) + " 页");
 
+                // ★2026-10-21 用户要求：翻到最后一页再滚，**不许轮到外面的分组区滚动**
+                //   （以前会落回面板自身滚动；他原话「文件夹外面的在滚了，这不太好」）
+                setPageM.Invoke(f, new object[] { gv, 999 });          // SetPage 会夹到最后一页
+                typeof(MainForm).GetField("_wheelAcc", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, 0);
+                int endPage = (int)pageOfM.Invoke(f, new object[] { gv });
+                int scrollBeforeEnd = (int)Field(f, "_scrollY");
+                hoverF.SetValue(f, groupIndex);
+                Wheel(f, -120);
+                int scrollAfterEnd = (int)Field(f, "_scrollY");
+                int pageAfterEnd = (int)pageOfM.Invoke(f, new object[] { gv });
+                Check(pageAfterEnd == endPage && scrollAfterEnd == scrollBeforeEnd,
+                    "文件夹翻到最后一页再滚：页数不动（第 " + (pageAfterEnd + 1)
+                    + " 页）、面板也不跟着滚（_scrollY " + scrollBeforeEnd + " → " + scrollAfterEnd
+                    + "）—— 不许轮到外面的分组区去");
+                setPageM.Invoke(f, new object[] { gv, 0 });
+
                 // 碎 Delta（触控板 / 高精度滚轮一次手势送几十个 30~60）：必须攒满一格（120）才翻页，
                 // 否则一次滑动就把文件夹从头翻到尾。
                 setPageM.Invoke(f, new object[] { gv, 0 });
@@ -1296,8 +1312,9 @@ namespace BreadLauncher
                     "两处滚动条同规格（±1px 抗锯齿容差）：面板 " + pw + "px 宽 / 距右缘 " + pm + "px，列表 "
                     + listBar[0] + "px 宽 / 距右缘 " + listBar[1] + "px（同一份 Theme.Scroll 数字）");
 
-                // 末页落回面板滚动时要用「攒出来的那一格」，不是最后一个碎 Delta ——
-                // 否则触控板在文件夹末页上滚一次只走 1/4 行（看着像没反应）。
+                // ★2026-10-21 用户改了规矩：文件夹翻到最后一页再滚 → **停住**，
+                //   不允许轮到面板自己的分组区去滚（以前专门做成「让给面板滚」，他否了：
+                //   「翻到最后一格再滚就是文件夹外面的在滚了，这不太好」）。
                 List<GroupView> gs2 = (List<GroupView>)Field(f, "_groups");
                 int multi = -1;
                 for (int i = 0; i < gs2.Count; i++)
@@ -1312,10 +1329,11 @@ namespace BreadLauncher
                     for (int i = 0; i < 4; i++) Wheel(f, -30);               // 触控板式碎 Delta，累计正好一格
                     int wy3 = (int)Field(f, "_scrollY");
                     typeof(MainForm).GetField("_hoverGroup", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, -1);
-                    CheckIf(maxW >= pitchW, "面板内容不足一行（MaxScroll=" + maxW + " < 行距 " + pitchW + "），落回面板滚动也走不动",
-                        wy3 == pitchW,
-                        "文件夹末页上继续滚：落回面板滚动走了 " + wy3 + "px（应为整行 " + pitchW
-                        + "，不是按最后一个碎 Delta 算的 " + Theme.Scroll.WheelPixels(30, pitchW, Theme.Scroll.GridRowsPerNotch) + "px）");
+                    int pageAfterEnd2 = (int)pageOfM.Invoke(f, new object[] { gv2 });
+                    CheckIf(true, "",
+                        wy3 == 0 && pageAfterEnd2 == pc2 - 1,
+                        "文件夹末页上继续滚：停在最后一页（第 " + (pageAfterEnd2 + 1) + " 页 / 共 " + pc2
+                        + " 页），面板**不跟着滚**（_scrollY = " + wy3 + "，要求 0）");
                 }
                 else Say("（没有多页分组，跳过「末页落回」断言）");
 
