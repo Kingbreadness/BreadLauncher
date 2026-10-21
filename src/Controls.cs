@@ -44,9 +44,29 @@ namespace BreadLauncher
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            try
-            {
-                Graphics g = e.Graphics;
+            try { PaintBody(e.Graphics, 0, 0); }
+            catch (Exception ex) { Theme.PaintCatch(this, e, "底栏按钮", ex); }
+        }
+
+        /// <summary>
+        /// 把按钮画到任意 Graphics 上（dest = 按钮在目标坐标系里的矩形）。
+        /// ★为什么需要：面板改成**分层窗口 + 逐像素 alpha**（2026-10-20 修「鼠标穿透」）之后，
+        ///   Windows 不给分层窗口合成子控件（实测：ULW 窗口里的 Button 完全不显示），
+        ///   底栏这三个按钮必须自己画进整帧位图，否则会整块消失。
+        ///   控件本身仍然留着 —— 它还要照常吃鼠标、管 hover/按下状态、弹菜单也靠它的 Bounds。
+        /// </summary>
+        public void RenderTo(Graphics g, Rectangle dest)
+        {
+            try { PaintBody(g, dest.X, dest.Y); }
+            catch (Exception) { }
+        }
+
+        /// <summary>真正画的地方。ox/oy = 画到目标 Graphics 时的原点偏移。
+        /// ★不能用 Graphics.TranslateTransform：GDI 的 TextRenderer **不认 GDI+ 的世界变换**，
+        ///   文字和图标会留在 (0,0)（2026-10-20 踩过：预览图里三个按钮全叠在左上角）。
+        ///   所以所有矩形自己加偏移。</summary>
+        private void PaintBody(Graphics g, int ox, int oy)
+        {
                 g.SmoothingMode = SmoothingMode.AntiAlias;
     
                 Color fore = Accent ? Theme.Accent : Theme.TextPrimary;
@@ -56,13 +76,13 @@ namespace BreadLauncher
                 {
                     if (_hover || _down)
                     {
-                        Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+                        Rectangle r = new Rectangle(ox, oy, Width - 1, Height - 1);
                         Theme.FillRound(g, r, Theme.Px(this, 6), _down ? Theme.HoverStrong : Theme.Surface);
                     }
                 }
                 else if (Style == Look.RoundIcon)
                 {
-                    if (_hover) Theme.FillRound(g, new Rectangle(0, 0, Width - 1, Height - 1), Theme.Px(this, 6), Theme.Surface);
+                    if (_hover) Theme.FillRound(g, new Rectangle(ox, oy, Width - 1, Height - 1), Theme.Px(this, 6), Theme.Surface);
                 }
                 else if (Style == Look.Link)
                 {
@@ -85,25 +105,23 @@ namespace BreadLauncher
                     int cap = Math.Max(minW, Width / 2);
                     if (glyphW > cap) glyphW = cap;
     
-                    Rectangle gr = new Rectangle(pad, 0, glyphW, Height);
+                    Rectangle gr = new Rectangle(ox + pad, oy, glyphW, Height);
                     // 字形不用 Theme.DrawText（它带 EndEllipsis，单字形用不上）；但要走 DrawTextRaw ——
                     // 它内部照样夹裁剪（GDI 不认 GDI+ 的 SetClip，别让字形画到裁剪区外面去）
                     Theme.DrawTextRaw(g, Glyph, glyphFont, gr, fore,
                         TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
                     if (Style == Look.IconText && !string.IsNullOrEmpty(text))
                     {
-                        Rectangle tr = new Rectangle(pad + glyphW, 0, Math.Max(1, Width - pad * 2 - glyphW), Height);
+                        Rectangle tr = new Rectangle(ox + pad + glyphW, oy, Math.Max(1, Width - pad * 2 - glyphW), Height);
                         Theme.DrawText(g, text, Font, tr, fore, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
                     }
                 }
                 else if (!string.IsNullOrEmpty(text))
                 {
-                    Rectangle tr = new Rectangle(pad, 0, Math.Max(1, Width - pad * 2), Height);
+                    Rectangle tr = new Rectangle(ox + pad, oy, Math.Max(1, Width - pad * 2), Height);
                     TextFormatFlags align = Style == Look.Link ? TextFormatFlags.Right : TextFormatFlags.Left;
                     Theme.DrawText(g, text, Font, tr, fore, align | TextFormatFlags.VerticalCenter);
                 }
-            }
-            catch (Exception ex) { Theme.PaintCatch(this, e, "底栏按钮", ex); }
         }
     }
 

@@ -1,4 +1,4 @@
-﻿// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
+// ClickProbe.cs —— 自检探针：验证「大文件夹」的关键行为
 //   1) 组内分页：超过 9 个每页 9 格，第 9 格是第 9 个应用（没有「+N」格了）+ 越界格为空
 //   2) 滚轮：停在文件夹上 = 翻内页；不在文件夹上 = 滚分组区（方向与系统一致）
 //   3) 拖动分组：把第 1 个文件夹拖到第 2 个位置，顺序真的换了
@@ -218,9 +218,8 @@ namespace BreadLauncher
                     setPageM.Invoke(f, new object[] { gv, 1 });
                     f.Refresh();
                     Application.DoEvents();
-                    using (Bitmap shot = new Bitmap(f.Width, f.Height))
+                    using (Bitmap shot = f.RenderToBitmap())
                     {
-                        f.DrawToBitmap(shot, new Rectangle(0, 0, f.Width, f.Height));
                         shot.Save(Path.Combine(Program.AppDir, "panel-page2.png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
                 }
@@ -1267,9 +1266,8 @@ namespace BreadLauncher
                 // 同列表：右界避开窗口边框 + 最外圈边缘高亮（它们比滚动条亮得多，会被误当成墨水）
                 int scanPL = Theme.Scroll.InkPx(f) + Theme.Scroll.MarginPx(f) + Theme.Px(f, 8);
                 int scanPR = f.Width - 1 - Theme.Scroll.MarginPx(f);
-                using (Bitmap shot = new Bitmap(f.Width, f.Height))
-                {
-                    f.DrawToBitmap(shot, new Rectangle(0, 0, f.Width, f.Height));
+                using (Bitmap shot = f.RenderToBitmap())
+                    {
                     pbar = BarBounds(shot, shot.Width - scanPL, scanPR, groupTop, groupTop + gH,
                                      Math.Max(4, Theme.Scroll.MinThumbPx(f) / 2), out barHits);
                 }
@@ -1515,9 +1513,8 @@ namespace BreadLauncher
                     Application.DoEvents();
                     try
                     {
-                        using (Bitmap shot = new Bitmap(f.Width, f.Height))
-                        {
-                            f.DrawToBitmap(shot, new Rectangle(0, 0, f.Width, f.Height));
+                        using (Bitmap shot = f.RenderToBitmap())
+                    {
                             shot.Save(Path.Combine(Program.AppDir, "panel-hover-name.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
                     }
@@ -1548,9 +1545,8 @@ namespace BreadLauncher
                     Application.DoEvents();
                     try
                     {
-                        using (Bitmap shot2 = new Bitmap(f.Width, f.Height))
+                        using (Bitmap shot2 = f.RenderToBitmap())
                         {
-                            f.DrawToBitmap(shot2, new Rectangle(0, 0, f.Width, f.Height));
                             shot2.Save(Path.Combine(Program.AppDir, "panel-name-label.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
                     }
@@ -1677,9 +1673,8 @@ namespace BreadLauncher
                         int bandTop = Math.Max(0, f.Height - fh - Theme.Px(f, 10));
                         int bandBottom = Math.Max(0, f.Height - fh);
                         int stray = 0;
-                        using (Bitmap shot = new Bitmap(f.Width, f.Height))
-                        {
-                            f.DrawToBitmap(shot, new Rectangle(0, 0, f.Width, f.Height));
+                        using (Bitmap shot = f.RenderToBitmap())
+                    {
                             for (int y = bandTop; y < bandBottom; y++)
                                 for (int x = 2; x < shot.Width - 2; x++)      // 跳过最外 2px（那里是面板边框）
                                 {
@@ -1691,72 +1686,41 @@ namespace BreadLauncher
                             "分组区下沿到页脚之间没有乱入的笔画（游离加号回归；这条带里的亮像素=" + stray + "）");
                     }
                     catch (Exception exBand) { Check(false, "页脚空白带检查异常：" + exBand.Message); }
-// ⑨ ★鼠标穿透检查（用户报的「鼠标在面板空白处滚滚轮，别的应用滚了」）：
-                    //    亚克力的「透出桌面」必须把窗体背景挖空，而挖空的像素**连鼠标一起穿透**
-                    //    （MSDN：color-keyed 区域会让鼠标消息穿过去）—— 两者同一机制、不可兼得。
-                    //    ★用户拍板：好看优先（保留整块透出桌面），所以这里**断言基线**（关掉亚克力 = 完全不穿透），
-                    //      亚克力开着时的穿透数只作为「已知代价」记在日志里。
+                    // ⑨ ★鼠标穿透检查（用户 2026-10-20 报的「鼠标点击和滚轮会穿透」）：
+                    //    以前的透明是**颜色键挖空**，挖掉的像素连鼠标消息一起穿过去（MSDN 原话），
+                    //    所以「好看」和「能用」当时只能二选一。2026-10-20 改成**逐像素 alpha 分层窗口**后两者兼得：
+                    //    背景 alpha=1（几乎全透）但照样吃鼠标。这里断言的是**机制**：
+                    //    没有颜色键 / 是分层窗口 / 背景 alpha=1。
+                    //    ⚠ 「真机上点一下不穿透」没法在离屏预览窗口里验（探针窗口不在屏幕坐标上），
+                    //      那一条靠真机实测（见 docs\dev-notes.md 坑 53）。
                     try
                     {
                         bool acrylicOn = stName.Acrylic;
-                        // ★采样前先把面板摆回屏幕内 (0,0)：前面几个用例会把面板拖到别处（甚至屏幕外的 -4000,-2000），
-                        //   而 WindowFromPoint 是看**屏幕坐标**的 —— 面板在屏幕外就永远命中不了，会假失败。
-                        Point oldLocHit = f.Location;
-                        f.Location = new Point(0, 0);
-                        f.Refresh();
-                        Application.DoEvents();
-                        Point[] blanks = new Point[]
-                        {
-                            new Point(f.Width / 2, Theme.Px(f, 24)),                    // 顶部空白（标题区）
-                            new Point(Theme.Px(f, 20), f.Height / 2),                   // 左侧留白
-                            new Point(f.Width - Theme.Px(f, 20), Theme.Px(f, 24)),      // 右上留白
-                        };
-                        // 基线：关掉亚克力（完全不挖空）→ 命中面板自己的才算「有效内部点」（自校准，别把窗口外的点算进来）
-                        stName.Acrylic = false;
-                        SetAcrylicState(f, Theme.ApplyBackdrop(f, false));
-                        f.Refresh(); Application.DoEvents();
-                        List<Point> valid = new List<Point>();
-                        for (int i = 0; i < blanks.Length; i++)
-                            if (HitSelf(f, f.PointToScreen(blanks[i]))) valid.Add(blanks[i]);
-
-                        // 亚克力开着（默认观感）：同批点会穿透 —— 已知代价。
-                        // ★两个前提都要满足，否则测出来的不是"穿透"而是"根本没挖空"：
-                        //   ① ApplyBackdrop 得真的生效（返回值）；
-                        //   ② 还得把窗体的 `_acrylicActive` 一起设上 —— PaintAll 靠它决定画不画不透明背景，
-                        //      只调 ApplyBackdrop 而不同步这个字段的话，背景照画 → 永远测不出穿透（踩过）。
+                        // ★★2026-10-20 大改：面板改成「分层窗口 + 逐像素 alpha」之后，**空白处不再穿透鼠标**。
+                        //   这段钉住三条「机制判据」—— 穿透的根因是颜色键（TransparencyKey），别再装回来：
+                        //   ① 绝不能有颜色键；② 窗口必须是 WS_EX_LAYERED；③ 背景 alpha 必须是 1（0 就会穿透，实测过）。
                         stName.Acrylic = true;
                         bool acrylicApplied = Theme.ApplyBackdrop(f, true);
                         SetAcrylicState(f, acrylicApplied);
                         f.Refresh(); Application.DoEvents();
-                        int throughCount = 0;
-                        for (int i = 0; i < valid.Count; i++)
-                            if (HitSelf(f, f.PointToScreen(valid[i]))) throughCount++;
-                        // ★「挖空」要在**亚克力正开着**的这一刻读（下面马上就按配置还原了，还原后读的是另一回事）
-                        Color keyColor = f.TransparencyKey;
-                        bool keyed = (keyColor != Color.Empty) && (f.BackColor == keyColor);
+                        bool hasKey = f.TransparencyKey != Color.Empty;
+                        bool layered = (GetWindowLong(f.Handle, -20) & 0x00080000) != 0;
+                        int bgAlpha = Theme.LayeredBgAlpha;
+                        Color keyNow = f.TransparencyKey;
 
                         stName.Acrylic = acrylicOn;
                         SetAcrylicState(f, Theme.ApplyBackdrop(f, acrylicOn));
-                        f.Location = oldLocHit;          // 还原面板位置
                         f.Refresh();
 
-                        // ★前提①：采样点得真的落在**探针自己的**面板上（你要是正开着 BreadLauncher，
-                        //   它盖在离屏窗口上 → WindowFromPoint 命中的是它 → 有效点 0 个 → 跳过）。
-                        // ★前提②：亚克力得真的生效（极少数环境下会退回不透明 → 那当然不穿透）。
-                        CheckIf(valid.Count > 0 && acrylicApplied,
-                            "采样点被别的窗口挡住 / 面板不在屏幕内 / 离屏窗口上亚克力没生效（已退回不透明），跳过穿透检查",
-                            throughCount < valid.Count,
-                            "亚克力开着时面板空白处**会穿透鼠标**（命中自己 " + throughCount + "/" + valid.Count
-                            + "）—— 这就是「整块透出桌面」观感的已知代价（用户报的「空白处滚滚轮、别的应用滚了」），"
-                            + "关掉亚克力就完全不穿透；这条也是那次事件的回归测试");
-                        // ★不依赖屏幕几何的硬判据：亚克力生效 = 窗口真的被"挖空"了
-                        //   （BackColor 与 TransparencyKey 都设成同一个 key 色）。这条是本轮那个 bug 的回归测试：
-                        //   曾经按 SetWindowCompositionAttribute 的返回值判断成败 → 任何机器都判成失败 → 永远不生效。
-                        Check(acrylicApplied && keyed,
-                            "开着亚克力时窗口确实做了「挖空」（BackColor = TransparencyKey = " + keyColor + "）"
-                            + " —— 没挖空半透明就是假的；判据不看那个不可靠的 API 返回值");
-                        Say("      已知代价：开着亚克力（默认）时同一批点命中自己=" + throughCount + "/" + valid.Count
-                            + "（整块透出桌面的观感就是这么来的；不想穿透就在设置里关掉亚克力）");
+                        Check(acrylicApplied,
+                            "亚克力还能开起来（ApplyBackdrop = true）—— 系统不支持时会退回不透明，那是另一回事");
+                        Check(hasKey == false,
+                            "亚克力开着时**没有颜色键**（TransparencyKey = " + keyNow + "）—— 颜色键挖掉的像素"
+                            + "连鼠标一起穿过去，正是用户 2026-10-20 报的「点击/滚轮穿透」的根因");
+                        Check(layered,
+                            "面板是分层窗口（WS_EX_LAYERED）—— 逐像素 alpha 透明的前提");
+                        Check(bgAlpha == 1,
+                            "背景像素 alpha = " + bgAlpha + "（必须 1：设成 0 系统就不认这块归窗口，鼠标又穿透了）");
                     }
                     catch (Exception exHit) { Check(false, "穿透检查异常：" + exHit.Message); }
 
@@ -1835,6 +1799,48 @@ namespace BreadLauncher
                 }
             }
             catch (Exception exSeam) { Check(false, "裁剪缝断言异常：" + exSeam.Message); }
+
+            // ★★ 文件夹的「名字带」是死区（2026-10-21 用户要求：可点范围只认卡片本体）
+            //   用户原话：「感觉比他本体下面多了一排」。以前名字那一行被颜色键穿透盖住了，
+            //   改成整块吃鼠标以后才显出来。现在：本体（ContainerH）算文件夹，名字带（TileH-ContainerH）算死区。
+            try
+            {
+                int nbTw = (int)Prop(f, "TileW");
+                int nbTh = (int)Prop(f, "TileH");
+                int nbC = (int)Prop(f, "ContainerH");
+                int nbLeft = (int)Field(f, "_groupLeft");
+                int nbTop = (int)Field(f, "_groupTop");
+                int nbH = (int)Field(f, "_groupHeight");
+                int nbScroll = (int)Field(f, "_scrollY");
+                int nbY0 = nbTop - nbScroll;
+                if (groups.Count > 0 && nbY0 >= nbTop && nbY0 + nbTh <= nbTop + nbH)
+                {
+                    MethodInfo nbHit = typeof(MainForm).GetMethod("GroupHitTest", BindingFlags.NonPublic | BindingFlags.Instance);
+                    MethodInfo nbBand = typeof(MainForm).GetMethod("InGroupNameBand", BindingFlags.NonPublic | BindingFlags.Instance);
+                    Point bodyPt = new Point(nbLeft + nbTw / 2, nbY0 + nbC / 2);
+                    Point namePt = new Point(nbLeft + nbTw / 2, nbY0 + nbC + (nbTh - nbC) / 2);
+                    object[] aBody = new object[] { bodyPt, 0, 0 };
+                    nbHit.Invoke(f, aBody);
+                    object[] aName = new object[] { namePt, 0, 0 };
+                    nbHit.Invoke(f, aName);
+                    bool bandBody = (bool)nbBand.Invoke(f, new object[] { bodyPt });
+                    bool bandName = (bool)nbBand.Invoke(f, new object[] { namePt });
+                    Check((int)aBody[1] == 0 && bandBody == false,
+                        "点**卡片本体**算文件夹（实测命中组=" + (int)aBody[1] + "，名字带判定=" + bandBody + "）");
+                    Check((int)aName[1] < 0 && bandName,
+                        "点**名字那一条**不算文件夹（死区：不选中/不拖动/不弹菜单；实测命中组=" + (int)aName[1] + "，名字带判定=" + bandName + "）");
+                    object[] aDown = new object[] { new MouseEventArgs(MouseButtons.Left, 1, namePt.X, namePt.Y, 0) };
+                    typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, aDown);
+                    bool moving = (bool)Field(f, "_panelMoving");
+                    Check(moving == false,
+                        "名字带按下去**不会**变成「按住空白拖面板」（实测 _panelMoving=" + moving + "）");
+                }
+                else
+                {
+                    NoteSkip("变体：第一个文件夹不在可见区内（滚动位置偏了），测不了「名字带死区」");
+                }
+            }
+            catch (Exception exBand) { Check(false, "名字带断言异常：" + exBand.Message); }
 
             // ★★ 变体：分组被**全删光**之后，「常用」组不能自己复活
             //   （ConfigStore.Normalize 的 Pinned 迁移必须带 `Seeded == false` 守卫；
@@ -2571,6 +2577,9 @@ namespace BreadLauncher
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern IntPtr WindowFromPoint(Point p);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
         /// <summary>这个屏幕坐标点是不是命中这个窗体自己（用来验证「鼠标穿透」）。
         /// 分层窗口里被 color-key 挖空的像素会让 WindowFromPoint 返回下面的窗口 —— 正是用户遇到的现象。</summary>

@@ -1,4 +1,4 @@
-﻿// MainForm.cs —— 面板本体：大文件夹分组、启动、右键菜单
+// MainForm.cs —— 面板本体：大文件夹分组、启动、右键菜单
 //
 // 交互约定（**照代码重写过一遍**，2026-09-27 核实）：
 //   · 点大文件夹里的小图标 = 直接启动。**默认启动完不关面板**，可以连着点好几个
@@ -58,6 +58,20 @@ namespace BreadLauncher
         private bool _modalOpen;
         /// <summary>亚克力**实际生效**没有（系统不支持时会自动退回不透明）。PaintAll 靠它决定要不要画背景。</summary>
         private bool _acrylicActive;
+
+        /// <summary>整帧位图缓存（分层窗口每帧推一次，见 RenderLayeredFrame）。</summary>
+        private Bitmap _layerFrame;
+        /// <summary>分层推送失败过一次就不再试（退回普通绘制，至少界面还在）。</summary>
+        private bool _layerFailed;
+        /// <summary>
+        /// ★★「下一帧要重画」的标记。**分层窗口收不到 WM_PAINT**（2026-10-21 实测：WS_EX_LAYERED 的窗口
+        /// 即使 Invalidate() 也不会收到 WM_PAINT，计数恒为 0），所以绘制改成**自驱动**：
+        /// 任何 Invalidate() → 标脏 → 定时器（15ms，只在脏时才跑）推一帧。
+        /// </summary>
+        private bool _frameDirty;
+        private System.Windows.Forms.Timer _renderTimer;
+        /// <summary>已经推上去多少帧（只用来在日志里记「第一帧」，不参与逻辑）。</summary>
+        private int _frameCount;
 #pragma warning restore 0414
         private DateTime _shownAt = DateTime.Now;
         private int _pendingIcons;
@@ -144,42 +158,26 @@ namespace BreadLauncher
             _hoverZone = 0;
         }
 
-        // 拖动期间临时关掉颜色键透明的现场
+        // 拖动期间临时改成不透明绘制的现场
         private bool _bgSuspended;
-        private Color _bgSavedKey;
-        private Color _bgSavedBack;
 
         /// <summary>
-        /// 拖动/缩放期间临时取消「颜色键透明」：面板开了亚克力时是**分层窗口**，
-        /// Windows 每次移动/改大小都要重新做一次透明合成 —— 这是除绘制之外最大的一笔开销。
-        /// 松手立刻恢复，所以平时看到的外观不变。
+        /// 拖动/缩放期间临时把面板画成**不透明**：分层窗口每次移动都要重新做一次逐像素合成，
+        /// 这是除绘制之外最大的一笔开销。松手立刻恢复，平时看到的外观不变。
+        /// ★2026-10-20 改：不再动 TransparencyKey（颜色键那套已经不用了），只翻一个绘制开关。
         /// </summary>
         private void SuspendTransparencyForDrag()
         {
             if (PreviewMode || _bgSuspended) return;
-            try
-            {
-                if (TransparencyKey == Color.Empty) return;   // 本来就不透明，不用折腾
-                _bgSavedKey = TransparencyKey;
-                _bgSavedBack = BackColor;
-                _bgSuspended = true;
-                TransparencyKey = Color.Empty;
-                BackColor = Theme.BgBottom;
-            }
-            catch (Exception) { _bgSuspended = false; }
+            _bgSuspended = true;
+            Invalidate();
         }
 
         private void ResumeTransparencyAfterDrag()
         {
             if (_bgSuspended == false) return;
             _bgSuspended = false;
-            try
-            {
-                BackColor = _bgSavedBack;
-                TransparencyKey = _bgSavedKey;
-                Invalidate();
-            }
-            catch (Exception) { }
+            Invalidate();
         }
 
         /// <summary>
@@ -388,6 +386,19 @@ namespace BreadLauncher
             _dragTimer.Interval = 10;
             _dragTimer.Tick += delegate { ApplyDragTarget(); };
 
+            // ★分层窗口的绘制驱动：WM_PAINT 不会来，只能自己推帧（见 _frameDirty 的说明）。
+            //   只在「脏」的时候跑，空闲时 0 开销；15ms 是为了把一串 Invalidate 合并成一帧。
+            _renderTimer = new System.Windows.Forms.Timer();
+            _renderTimer.Interval = 15;
+            _renderTimer.Tick += delegate
+            {
+                _renderTimer.Stop();
+                if (_frameDirty == false || IsDisposed || IsHandleCreated == false) return;
+                _frameDirty = false;
+                try { RenderLayeredFrame(); } catch (Exception) { }
+            };
+            Invalidated += delegate { MarkFrameDirty(); };
+
             _settings = string.IsNullOrEmpty(_settingsFile)
                 ? ConfigStore.LoadSettings(Program.AppDir)
                 : ConfigStore.LoadSettingsFile(_settingsFile);
@@ -500,6 +511,22 @@ namespace BreadLauncher
             Controls.Add(_settingsBtn);
             Controls.Add(_newGroupBtn);
             Controls.Add(_closeBtn);
+
+            // ★分层窗口不合成子控件 → 底栏按钮是「控件管鼠标、PaintAll 管画面」的分工。
+            //   所以按钮自己的 hover / 按下状态一变，必须让**整帧重画**，否则高亮不会出现。
+            HookFooterRepaint(_settingsBtn);
+            HookFooterRepaint(_newGroupBtn);
+            HookFooterRepaint(_closeBtn);
+        }
+
+        /// <summary>底栏按钮的状态变化 → 让父窗体重画整帧（原因见 BuildUi 里的注释）。</summary>
+        private void HookFooterRepaint(Control b)
+        {
+            if (b == null) return;
+            b.MouseEnter += delegate { Invalidate(); };
+            b.MouseLeave += delegate { Invalidate(); };
+            b.MouseDown += delegate { Invalidate(); };
+            b.MouseUp += delegate { Invalidate(); };
         }
 
         protected override void OnLoad(EventArgs e)
@@ -723,6 +750,15 @@ namespace BreadLauncher
         {
             try
             {
+                // ★★2026-10-20：面板现在是**分层窗口 + 逐像素 alpha**（为了修「鼠标点击/滚轮穿透」）。
+                //   整帧先画进一张 32bpp 位图（背景 alpha=1、内容 alpha=255），再 UpdateLayeredWindow 推上去。
+                //   ⚠ 这里**不能**再把内容画到 e.Graphics 上：分层窗口的画面只认推送上去的那张位图。
+                //   预览（--preview）是离屏出图，照旧走 PaintAll。
+                if (PreviewMode == false && _layerFailed == false && IsHandleCreated)
+                {
+                    RenderLayeredFrame();
+                    return;
+                }
                 PaintAll(e);
             }
             catch (Exception ex)
@@ -744,6 +780,65 @@ namespace BreadLauncher
             }
         }
 
+        /// <summary>标脏并安排一次重画（15ms 内多次 Invalidate 会合并成一帧）。</summary>
+        private void MarkFrameDirty()
+        {
+            _frameDirty = true;
+            if (PreviewMode) return;
+            if (_layerFailed) return;    // 退回普通绘制时交给 WinForms 自己画
+            try { if (_renderTimer != null && _renderTimer.Enabled == false) _renderTimer.Start(); }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 把整帧画进位图并推给分层窗口。**这是面板唯一真正的绘制出口**（普通绘制只在预览/推送失败时用）。
+        /// 背景 alpha=1：肉眼是全透（亚克力模糊照样透出来），但系统仍判定这些像素归本窗口 → **鼠标不穿透**。
+        /// </summary>
+        private void RenderLayeredFrame()
+        {
+            int w = Math.Max(1, Width), h = Math.Max(1, Height);
+            if (_layerFrame == null || _layerFrame.Width != w || _layerFrame.Height != h)
+            {
+                if (_layerFrame != null) { try { _layerFrame.Dispose(); } catch (Exception) { } }
+                _layerFrame = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            }
+            using (Graphics g = Graphics.FromImage(_layerFrame))
+            {
+                g.Clear(Color.FromArgb(Theme.LayeredBgAlpha, 0, 0, 0));
+                PaintAll(new PaintEventArgs(g, new Rectangle(0, 0, w, h)));
+            }
+            Theme.NormalizeAlpha(_layerFrame);
+            if (Theme.PushLayered(Handle, _layerFrame))
+            {
+                _frameCount++;
+                if (_frameCount == 1)
+                {
+                    // 第一帧记一笔：以后要是有人报「面板一片空白」，先看这行在不在 —— 在=推上去了
+                    try { ConfigStore.Log(Program.AppDir, "分层首帧已推送：" + w + "x" + h + "，组数=" + _groups.Count + "，亚克力=" + _acrylicActive); } catch (Exception) { }
+                }
+            }
+            else
+            {
+                _layerFailed = true;
+                try { ConfigStore.Log(Program.AppDir, "★分层窗口推送失败，已退回普通绘制（亚克力会失效）：窗口 " + w + "x" + h); } catch (Exception) { }
+                Invalidate();
+            }
+        }
+
+        /// <summary>离屏渲染一整帧（--preview 用）。底色用 TransparentKey（20,20,20）——
+        /// 那是改版前预览图的底色，保持一致，两张图才能直接逐像素比对。</summary>
+        public Bitmap RenderToBitmap()
+        {
+            int w = Math.Max(1, Width), h = Math.Max(1, Height);
+            Bitmap bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Theme.TransparentKey);
+                PaintAll(new PaintEventArgs(g, new Rectangle(0, 0, w, h)));
+            }
+            return bmp;
+        }
+
         private void PaintAll(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -751,10 +846,11 @@ namespace BreadLauncher
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.CompositingMode = CompositingMode.SourceOver;
 
-            bool acrylic = _acrylicActive;      // ★用"实际生效"而不是设置值：系统不支持时这里会是 false → 画不透明背景
-            // ★亚克力 = 不画背景（整块透出桌面，最好看）。代价：被挖空的像素**连鼠标一起穿透**
-            //   （MSDN：color-keyed 区域会让鼠标消息穿过去）—— 「鼠标在面板空白处滚滚轮，别的应用滚了」就是这个。
-            //   用户拍板：**好看优先**，靠设置菜单的文案 + 打开时的一次提示说清代价（那个"是否穿透"的开关已按用户要求删掉）。
+            bool acrylic = _acrylicActive && _bgSuspended == false;   // ★用"实际生效"而不是设置值：系统不支持时这里会是 false → 画不透明背景
+            // ★亚克力 = 不画背景（整块透出桌面 + 模糊，最好看）。
+            //   ⚠ 2026-10-20 之前的注释说"代价：被挖空的像素连鼠标一起穿透"——**那条已经过时**：
+            //   现在透明靠的是逐像素 alpha（背景 alpha=1），系统照样把这块算成本窗口的 → 点击/滚轮都在面板上。
+            //   拖动期间 `_bgSuspended=true` 会画成不透明（合成开销最小），松手恢复。
             if (acrylic == false)
             {
                 using (LinearGradientBrush b = new LinearGradientBrush(
@@ -805,8 +901,24 @@ namespace BreadLauncher
                 }
             }
 
+            // ★底栏三个按钮必须**自己画进位图**：分层窗口不合成子控件（实测：ULW 窗口里的 Button 完全不显示）。
+            //   控件本身还留着 —— 它负责吃鼠标、hover/按下状态、弹菜单的锚点。
+            RenderFooterButtons(g);
+
             using (Pen pen = new Pen(Theme.Border))
                 g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+
+        /// <summary>把底栏三个按钮画进整帧（见 FlatButton.RenderTo 的说明）。</summary>
+        private void RenderFooterButtons(Graphics g)
+        {
+            FlatButton[] bs = new FlatButton[] { _settingsBtn, _newGroupBtn, _closeBtn };
+            for (int i = 0; i < bs.Length; i++)
+            {
+                FlatButton b = bs[i];
+                if (b == null || b.Visible == false) continue;
+                b.RenderTo(g, b.Bounds);
+            }
         }
 
         /// <summary>
@@ -1019,7 +1131,10 @@ namespace BreadLauncher
                 int x = _groupLeft + c * (tw + gx);
                 int y = _groupTop + r * (thAll + gy) - _scrollY;
 
-                Rectangle tile = new Rectangle(x, y, tw, thAll);
+                // ★2026-10-21 用户要求：可点区域 = **卡片本体**，不含下面那条名字带。
+                //   实测那块面板：本体 238px + 名字带 47px，多出来那一排以前被颜色键穿透盖住了，
+                //   整块吃鼠标之后就显出来了（用户报：「比他本体下面多了一排」）。
+                Rectangle tile = new Rectangle(x, y, tw, ContainerH);
                 if (tile.Contains(p) == false) continue;
 
                 index = i;
@@ -1052,6 +1167,29 @@ namespace BreadLauncher
                 return index;
             }
             return index;
+        }
+
+        /// <summary>
+        /// 这个点是不是落在某个文件夹的「名字带」上（卡片本体下面那一条，高度 GroupNameH）。
+        /// ★2026-10-21 用户要求：**名字那一条不算文件夹的可点区域**（实测本体 238px、名字带 47px，
+        ///   多出来那一排以前被颜色键穿透盖住了，整块吃鼠标之后才显出来）。
+        /// 这一条现在是**死区**：不选中、不拖动、不弹菜单（见 OnMouseDown / OnMouseUp 的两处调用）。
+        /// </summary>
+        private bool InGroupNameBand(Point p)
+        {
+            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return false;
+            int cols = Columns;
+            int tw = TileW;
+            for (int i = 0; i < _groups.Count; i++)
+            {
+                int r = i / cols;
+                int c = i % cols;
+                int x = _groupLeft + c * (tw + GapX);
+                int y = _groupTop + r * (TileH + GapY) - _scrollY;
+                if (p.X < x || p.X >= x + tw) continue;
+                if (p.Y >= y + ContainerH && p.Y < y + TileH) return true;
+            }
+            return false;
         }
 
         // ============================================================
@@ -1117,6 +1255,10 @@ namespace BreadLauncher
             {
                 _downPoint = e.Location;
                 _downValid = true;
+
+                // ★名字带是死区（用户 2026-10-21 要求：可点范围只认卡片本体）——
+                //   不往下走就不会变成「按住空白拖面板」，也不会选中文件夹。
+                if (InGroupNameBand(e.Location)) { _downValid = false; base.OnMouseDown(e); return; }
 
                 // 0) 抓在**固定把手**上 = 搬面板（优先判断，因为它就在顶部那一条里）
                 if (_gripHit.Width > 0 && _gripHit.Contains(e.Location))
@@ -1405,6 +1547,7 @@ namespace BreadLauncher
                 {
                     if (overTile == false)
                     {
+                        if (InGroupNameBand(e.Location)) return;   // 名字带 = 死区，不弹菜单
                         ShowEmptyMenu();
                     }
                     else
@@ -1499,9 +1642,12 @@ namespace BreadLauncher
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            // WinForms 的 TopMost 属性在这种「无边框 + TransparencyKey/亚克力」窗口上不可靠
+            // WinForms 的 TopMost 属性在这种「无边框 + 分层窗口」上不可靠
             // （属性为 true 但 WS_EX_TOPMOST 没设上），所以这里直接用 Win32 再钉一次。
             if (PreviewMode == false) PinTopMost();
+            // 第一帧立刻推（分层窗口不会自己来 WM_PAINT；只等 15ms 定时器的话会空一瞬）
+            if (PreviewMode == false) { try { RenderLayeredFrame(); } catch (Exception) { } }
+            MarkFrameDirty();
         }
 
         [DllImport("user32.dll")]
@@ -1518,7 +1664,7 @@ namespace BreadLauncher
         /// <summary>把面板钉在最前面（用户要求「主动置顶」）。allowShow=false 时不带 SWP_SHOWWINDOW。</summary>
         /// <remarks>
         /// ★`SWP_SHOWWINDOW` 会把窗口**强行显示出来**，所以它只能在「窗口本来就该可见」的时机用（OnShown）。
-        /// 句柄创建的时机（OnHandleCreated，含亚克力改 TransparencyKey 引起的那次重建）窗口还没摆好位置，
+        /// 句柄创建的时机（OnHandleCreated）窗口还没摆好位置，
         /// 带上它就是「左上角闪一下」的直接原因之一（用户 2026-09-28 报的那条）。
         /// </remarks>
         private void PinTopMost()
@@ -1546,6 +1692,8 @@ namespace BreadLauncher
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             try { _dragTimer.Stop(); } catch (Exception) { }
+            try { if (_renderTimer != null) _renderTimer.Stop(); } catch (Exception) { }
+            try { if (_layerFrame != null) { _layerFrame.Dispose(); _layerFrame = null; } } catch (Exception) { }
             try { PersistSettings(); }
             // ★关面板是**最后一次落盘**：异常被吞掉的话，这一次会话改的东西全丢，而且日志里
             //   一个字都不会有（用户只会觉得"我改的分组怎么没了"）。所以这里必须留痕。
@@ -2482,11 +2630,13 @@ namespace BreadLauncher
             // ★这三条是开关：**打勾 = 当前状态**，文字也写清「已开启 / 已关闭」。
             //   以前写的是「亚克力半透明：关」=「点一下会关掉」——用户反馈分不清是状态还是动作（容易弄混）。
             // ★亚克力那条的文字还要**如实**：系统不支持时面板其实是不透明的（`_acrylicActive=false`），
-            //   那时候还写「空白处会穿透鼠标」就是假话 —— 换成「这台系统不支持」。
+            //   那时候还写「透出桌面」就是假话 —— 换成「这台系统不支持」。
+            // ★2026-10-20：**「空白处会穿透鼠标」这句已经从菜单里删掉** —— 改成逐像素 alpha 之后
+            //   面板整块吃鼠标，不再穿透（用户报的就是这个），这句话留着就是假话。
             //   这种情况以前是弹一个说明框，用户 2026-09-28 要求：**不弹窗**，写进菜单文字里就行。
             string acrylicLabel = (_settings.Acrylic && _acrylicActive == false)
                 ? "亚克力半透明（这台系统不支持，面板保持不透明）"
-                : "亚克力半透明（空白处会穿透鼠标）";
+                : "亚克力半透明（透出桌面背景）";
             menu.Items.Add(ToggleItem(acrylicLabel, _settings.Acrylic, delegate { ToggleAcrylic(); }));
             menu.Items.Add(ToggleItem("鼠标悬停显示名字", _settings.HoverNames, delegate { ToggleHoverNames(); }));
             menu.Items.Add(ToggleItem("启动应用后关闭面板", _settings.CloseAfterLaunch, delegate { ToggleCloseAfterLaunch(); }));
@@ -2601,7 +2751,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.13\n\n" +
+                    "BreadLauncher 1.14\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -295,11 +296,26 @@ namespace BreadLauncher
             return true;
         }
 
-        // ---------------- 亚克力（可选，默认关闭） ----------------
-
+        // ---------------- 亚克力（默认开启）+ 逐像素分层推送 ----------------
+        //
+        // ★2026-10-20 起**不再用 TransparencyKey（颜色键）做透明**：
+        //   颜色键挖掉的像素会连鼠标消息一起穿过去（MSDN：color-keyed 区域鼠标消息穿透），
+        //   而面板整个背景都是挖空的 → 点面板空白处会点到后面的窗口、滚轮也滚到后面那个应用
+        //   （用户 2026-10-20 报的原话：「鼠标点击和滚轮会穿透」）。
+        //   现在改成**分层窗口 + 逐像素 alpha**：每帧把整张 32bpp 位图用 UpdateLayeredWindow 推上去。
+        //   背景像素 alpha 固定 1（肉眼=全透，亚克力模糊照样透出来），
+        //   但 alpha>0 的像素系统一律算「这个窗口的」→ 鼠标不再穿透（2026-10-20 本机实测：点击落在面板上）。
         private const int WCA_ACCENT_POLICY = 19;
         private const int ACCENT_ENABLE_ACRYLICBLURBEHIND = 4;
         private const int ACCENT_ENABLE_BLURBEHIND = 3;
+
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_LAYERED = 0x00080000;
+        private const int ULW_ALPHA = 2;
+        private const byte AC_SRC_ALPHA = 1;
+
+        /// <summary>背景像素的 alpha：1 而不是 0 —— 0 会被系统判成「这块不归我」→ 鼠标穿过去（实测）。</summary>
+        public const int LayeredBgAlpha = 1;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct AccentPolicy
@@ -318,34 +334,68 @@ namespace BreadLauncher
             public int SizeOfData;
         }
 
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
+        }
+
         [DllImport("user32.dll")]
         private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll")]
+        private static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, IntPtr pptDst, ref Size psize,
+            IntPtr hdcSrc, ref Point pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr hObject);
+
         /// <summary>
-        /// 打开/关闭亚克力半透明。**返回实际生效的观感**：true = 背景真的透出桌面（窗口已挖空），
+        /// 打开/关闭亚克力半透明。**返回实际生效的观感**：true = 背景真的透出桌面（亚克力模糊），
         /// false = 不透明（关掉了，或者系统既不支持亚克力也不支持模糊 —— 这时**主动退回不透明**）。
-        /// ★为什么要有这个返回值：亚克力默认开启，而在老系统上"挖空成功、模糊失败"会得到一个
+        /// ★为什么要有这个返回值：亚克力默认开启，而在老系统上"调用失败"会得到一个
         ///   **完全透明、什么都没有**的破面板（只剩图标浮在桌面上）。宁可不透明，也不要破观感。
+        /// ★★2026-10-20 大改：不再设 `TransparencyKey`。透明完全由 MainForm 每帧推的**逐像素 alpha 位图**负责
+        ///   （见 `PushLayered` / `NormalizeAlpha`）。这里只负责「窗口是分层的 + 亚克力模糊开着」。
         /// </summary>
         public static bool ApplyBackdrop(Form f, bool acrylic)
         {
             if (f == null || !f.IsHandleCreated) return false;
             try
             {
-                if (!acrylic)
-                {
-                    f.BackColor = BgBottom;
-                    f.TransparencyKey = Color.Empty;
-                    return false;
-                }
+                f.BackColor = BgBottom;
+                // ★颜色键必需是空：TransparencyKey 一旦设上，UpdateLayeredWindow 会失败（两者互斥，本机实测）。
+                if (f.TransparencyKey != Color.Empty) f.TransparencyKey = Color.Empty;
+                EnsureLayered(f);
 
-                // Windows 的模糊只能生效在「透明像素」上：把整个窗体底色设成同一个 key 色，
-                // 这个颜色会被系统挖空，后面的桌面/窗口模糊就透出来了。
-                f.BackColor = TransparentKey;
-                f.TransparencyKey = TransparentKey;
+                if (!acrylic) return false;
 
                 AccentPolicy policy = new AccentPolicy();
                 policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
@@ -379,7 +429,6 @@ namespace BreadLauncher
                     }
                     catch { }
                     f.BackColor = BgBottom;
-                    f.TransparencyKey = Color.Empty;
                     return false;
                 }
                 finally
@@ -389,8 +438,82 @@ namespace BreadLauncher
             }
             catch
             {
-                try { f.BackColor = BgBottom; f.TransparencyKey = Color.Empty; } catch { }
+                try { f.BackColor = BgBottom; } catch { }
                 return false;
+            }
+        }
+
+        /// <summary>把窗口变成分层窗口（幂等；重复调用无害）。</summary>
+        public static void EnsureLayered(Form f)
+        {
+            if (f == null || !f.IsHandleCreated) return;
+            int ex = GetWindowLong(f.Handle, GWL_EXSTYLE);
+            if ((ex & WS_EX_LAYERED) == 0) SetWindowLong(f.Handle, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+        }
+
+        /// <summary>
+        /// 把整张 32bpp 位图推成分层窗口的画面（位置不动，只换内容）。成功返回 true。
+        /// ★位图必须已经过 `NormalizeAlpha`：背景 alpha=1（几乎全透，但**吃鼠标**），内容 alpha=255。
+        /// </summary>
+        public static bool PushLayered(IntPtr hwnd, Bitmap bmp)
+        {
+            if (hwnd == IntPtr.Zero || bmp == null) return false;
+            IntPtr screenDc = IntPtr.Zero, memDc = IntPtr.Zero, hBmp = IntPtr.Zero, old = IntPtr.Zero;
+            try
+            {
+                screenDc = GetDC(IntPtr.Zero);
+                memDc = CreateCompatibleDC(screenDc);
+                hBmp = bmp.GetHbitmap(Color.FromArgb(0));
+                old = SelectObject(memDc, hBmp);
+                Size size = new Size(bmp.Width, bmp.Height);
+                Point src = new Point(0, 0);
+                BLENDFUNCTION bf = new BLENDFUNCTION();
+                bf.BlendOp = 0;
+                bf.BlendFlags = 0;
+                bf.SourceConstantAlpha = 255;
+                bf.AlphaFormat = AC_SRC_ALPHA;
+                // pptDst 传 null = 位置不变（窗口的 Left/Top 由 WinForms 自己管，这里只换画面）
+                return UpdateLayeredWindow(hwnd, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref bf, ULW_ALPHA);
+            }
+            catch { return false; }
+            finally
+            {
+                try { if (old != IntPtr.Zero) SelectObject(memDc, old); } catch { }
+                try { if (hBmp != IntPtr.Zero) DeleteObject(hBmp); } catch { }
+                try { if (memDc != IntPtr.Zero) DeleteDC(memDc); } catch { }
+                try { if (screenDc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screenDc); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 补 alpha 通道：**GDI（TextRenderer）不写 alpha**，读回来是 0 → 直接推上去文字会整块消失。
+        /// 规则：alpha==0 或 1 且 RGB 不是纯黑的像素 → 补成 255（是字/线）；纯黑保持 1（是背景，几乎全透）。
+        /// ★背景的 1 不能改成 0：0 会被系统判成"这个像素不归窗口"→ 鼠标穿过去（2026-10-20 实测）。
+        /// </summary>
+        public static void NormalizeAlpha(Bitmap bmp)
+        {
+            if (bmp == null) return;
+            Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            BitmapData bd = null;
+            try
+            {
+                bd = bmp.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+                int n = bd.Stride * bmp.Height;
+                byte[] buf = new byte[n];
+                Marshal.Copy(bd.Scan0, buf, 0, n);
+                for (int i = 0; i < n; i += 4)
+                {
+                    byte a = buf[i + 3];
+                    if (a > 1) continue;
+                    if ((buf[i] | buf[i + 1] | buf[i + 2]) != 0) buf[i + 3] = 255;
+                    else buf[i + 3] = (byte)LayeredBgAlpha;
+                }
+                Marshal.Copy(buf, 0, bd.Scan0, n);
+            }
+            catch { }
+            finally
+            {
+                try { if (bd != null) bmp.UnlockBits(bd); } catch { }
             }
         }
 

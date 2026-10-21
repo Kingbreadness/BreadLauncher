@@ -218,9 +218,8 @@ namespace BreadLauncher
                     Thread.Sleep(50);
                 }
                 for (int i = 0; i < 20; i++) { Application.DoEvents(); Thread.Sleep(60); }
-                using (Bitmap bmp = new Bitmap(f.Width, f.Height))
+                using (Bitmap bmp = f.RenderToBitmap())
                 {
-                    f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
                     bmp.Save(outPath, ImageFormat.Png);
                 }
                 Console.WriteLine("已生成预览图：" + outPath + "  (" + f.Width + "x" + f.Height + ")");
