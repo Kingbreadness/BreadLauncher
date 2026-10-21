@@ -1,4 +1,23 @@
-# BreadLauncher —— 单文件、零安装的 Windows 应用启动面板
+# BreadLauncher
+
+**A zero-install Windows app launcher — a “big folder” panel that pops up on double-click.**
+
+Every folder is a 3×3 tile page: click an icon and the app launches — no digging into folders. Drag tiles to reorder,
+right-click one tile to manage everything, wheel to flip pages. Single exe, no admin, no registry, no tray, no background
+process — close it and it's gone. Delete the folder to uninstall.
+
+![BreadLauncher demo](docs/demo.gif)
+
+- **Big folders, 3×3 tiles** — 9 apps per page, wheel flips pages, drag a tile to reorder
+- **One right-click manages everything** — add / remove / rename / move apps and groups from one menu
+- **Acrylic, and it still takes the mouse** — a see-through dark panel where clicks and the wheel stay on the panel
+- **~500 KB single exe** — Windows 10/11 x64, runs on the .NET Framework 4.x that ships with Windows
+
+[**Download the latest release**](../../releases/latest) · MIT · [中文说明](#中文说明)
+
+---
+
+## 中文说明
 
 双击就弹出来，一格一格全摊开：**点哪个小图标就启动哪个，不用先点进文件夹**。面板能自己挪位置、拉大小，而且都记得住；**关掉就退出 —— 没有托盘、没有后台进程、没有开机自启**。
 

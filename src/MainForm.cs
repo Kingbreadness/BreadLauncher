@@ -1005,8 +1005,11 @@ namespace BreadLauncher
                 if (cardAlpha < 0) cardAlpha = 0;
                 Theme.FillRound(g, box, radius, Color.FromArgb(cardAlpha, cardBase.R, cardBase.G, cardBase.B));
                 // ★边框单独一个不透明度（用户要「只剩一条线」）：背景几乎全透了，线得看得见
-                Color cardEdge = Color.FromArgb(Theme.CardBorderAlpha, Theme.Border.R, Theme.Border.G, Theme.Border.B);
-                Theme.DrawRound(g, box, radius, cardEdge, 1f);
+                // ★2026-10-21：卡片背景全透之后，光靠一点点底色做悬停反馈太弱 → 悬停时**边框亮成强调色**
+                Color cardEdge = hoverBody
+                    ? Color.FromArgb(170, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B)
+                    : Color.FromArgb(Theme.CardBorderAlpha, Theme.Border.R, Theme.Border.G, Theme.Border.B);
+                Theme.DrawRound(g, box, radius, cardEdge, hoverBody ? 1.6f : 1f);
 
                 // 拖动反馈：来源压暗，落点描一圈强调色
                 if (_dragActive && _dragFrom == i)
@@ -2911,7 +2914,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.20\n\n" +
+                    "BreadLauncher 1.21\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
