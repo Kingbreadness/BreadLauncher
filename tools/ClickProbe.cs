@@ -228,6 +228,93 @@ namespace BreadLauncher
                     + (finPage + 1) + " 页（不攒的话一次手势能翻好几页）");
                 hoverF.SetValue(f, -1);
 
+                // ★★2026-10-21 新增：**数字键 1~9 快启**（鼠标停在哪个文件夹上，就取那一页的第 N 个）
+                try
+                {
+                    MethodInfo appForDigit = typeof(MainForm).GetMethod("AppForDigit", BindingFlags.NonPublic | BindingFlags.Instance);
+                    setPageM.Invoke(f, new object[] { gv, 0 });
+                    hoverF.SetValue(f, groupIndex);
+                    AppEntry q1 = (AppEntry)appForDigit.Invoke(f, new object[] { 1 });
+                    AppEntry q2 = (AppEntry)appForDigit.Invoke(f, new object[] { 2 });
+                    AppEntry q0 = (AppEntry)appForDigit.Invoke(f, new object[] { 0 });
+                    AppEntry q10 = (AppEntry)appForDigit.Invoke(f, new object[] { 10 });
+                    Check(q1 != null && q1.Key == gv.Apps[0].Key
+                          && q2 != null && q2.Key == gv.Apps[1].Key
+                          && q0 == null && q10 == null,
+                        "数字键快启：1 → 第 1 个应用、 2 → 第 2 个；0 / 10 越界不生效（实测 "
+                        + (q1 == null ? "null" : q1.DisplayName) + " / " + (q2 == null ? "null" : q2.DisplayName) + "）");
+                    if (gv.Apps.Count > 9)
+                    {
+                        setPageM.Invoke(f, new object[] { gv, 1 });
+                        AppEntry q1p2 = (AppEntry)appForDigit.Invoke(f, new object[] { 1 });
+                        Check(q1p2 != null && q1p2.Key == gv.Apps[9].Key,
+                            "数字键快启跟着**当前页**：第 2 页按 1 → 第 10 个应用（实测 "
+                            + (q1p2 == null ? "null" : q1p2.DisplayName) + "）");
+                        setPageM.Invoke(f, new object[] { gv, 0 });
+                    }
+                    hoverF.SetValue(f, -1);
+                    AppEntry qNoHover = (AppEntry)appForDigit.Invoke(f, new object[] { 1 });
+                    Check(qNoHover == null, "数字键快启：没有悬停在任何文件夹上时不启动任何东西");
+                }
+                catch (Exception exDigit) { Check(false, "数字键快启断言异常：" + exDigit.Message); }
+
+                // ★★2026-10-21 新增：**组内拖图标排序**（拖完 Keys 也要跟着变、落盘不能丢）
+                try
+                {
+                    if (gv.Apps.Count >= 2)
+                    {
+                        MethodInfo reorder = typeof(MainForm).GetMethod("ReorderIcon", BindingFlags.NonPublic | BindingFlags.Instance);
+                        setPageM.Invoke(f, new object[] { gv, 0 });
+                        string k0 = gv.Apps[0].Key;
+                        string k1 = gv.Apps[1].Key;
+                        reorder.Invoke(f, new object[] { groupIndex, 0, 1 });
+                        bool swapped = gv.Apps[0].Key == k1 && gv.Apps[1].Key == k0
+                                    && gv.Group.Keys.Count >= 2 && gv.Group.Keys[0] == k1 && gv.Group.Keys[1] == k0;
+                        reorder.Invoke(f, new object[] { groupIndex, 1, 0 });
+                        bool restored = gv.Apps[0].Key == k0 && gv.Group.Keys[0] == k0;
+                        Check(swapped && restored,
+                            "组内拖图标排序：把第 1 格拖到第 2 格→两个应用交换、组里的 Keys 也跟着交换；拖回去能还原（"
+                            + (swapped ? "交换 OK" : "交换没生效") + "、" + (restored ? "还原 OK" : "还原不对") + "）");
+                    }
+                    else NoteSkip("这组不足 2 个应用，测不了「组内拖图标排序」");
+                }
+                catch (Exception exReorder) { Check(false, "组内拖图标排序断言异常：" + exReorder.Message); }
+
+                // ★★端到端：真模拟「按下图标 → 拖到另一格 → 松手」，顺序必须真的换
+                try
+                {
+                    if (gv.Apps.Count >= 2)
+                    {
+                        MethodInfo mmDown = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmMove = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmUp = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        int cols2 = (int)Prop(f, "Columns");
+                        int tw2 = (int)Prop(f, "TileW"), th2 = (int)Prop(f, "TileH");
+                        int gx2 = (int)Prop(f, "GapX"), gy2 = (int)Prop(f, "GapY");
+                        int left2 = (int)Field(f, "_groupLeft"), top2 = (int)Field(f, "_groupTop");
+                        int mp = (int)Prop(f, "MiniPad"), mb = (int)Prop(f, "MiniBox"), mg = (int)Prop(f, "MiniGap");
+                        int scroll2 = (int)Field(f, "_scrollY");
+                        int bx = left2 + (groupIndex % cols2) * (tw2 + gx2);
+                        int by = top2 + (groupIndex / cols2) * (th2 + gy2) - scroll2;
+                        Point cell0 = new Point(bx + mp + mb / 2, by + mp + mb / 2);
+                        Point cell1 = new Point(bx + mp + (mb + mg) + mb / 2, by + mp + mb / 2);
+                        setPageM.Invoke(f, new object[] { gv, 0 });
+                        string e0 = gv.Apps[0].Key, e1 = gv.Apps[1].Key;
+                        mmDown.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, cell0.X, cell0.Y, 0) });
+                        mmMove.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, cell1.X, cell1.Y, 0) });
+                        mmUp.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, cell1.X, cell1.Y, 0) });
+                        bool e2eSwapped = gv.Apps[0].Key == e1 && gv.Apps[1].Key == e0;
+                        mmDown.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, cell1.X, cell1.Y, 0) });
+                        mmMove.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, cell0.X, cell0.Y, 0) });
+                        mmUp.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, cell0.X, cell0.Y, 0) });
+                        bool e2eBack = gv.Apps[0].Key == e0;
+                        Check(e2eSwapped && e2eBack,
+                            "端到端：按下第 1 格图标拖到第 2 格松手 → 两个应用真的交换；再拖回去也能还原（"
+                            + (e2eSwapped ? "交换 OK" : "交换没生效") + "、" + (e2eBack ? "还原 OK" : "还原不对") + "）");
+                    }
+                }
+                catch (Exception exE2E) { Check(false, "组内拖图标端到端断言异常：" + exE2E.Message); }
+
                 // 顺便把第 2 页的面板截一张（排版改动必须用眼睛看）
                 try
                 {

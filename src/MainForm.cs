@@ -106,6 +106,13 @@ namespace BreadLauncher
         private int _dragTo = -1;
         private bool _dragActive;
         private bool _dragOnIcon;     // 从图标上起拖 = 需要更大位移，避免吃掉「点一下启动」
+
+        // ★★2026-10-21 新增：按在**小图标**上拖 = **组内排序**（不是拖整个文件夹）。
+        //   按在**卡片本体**上拖仍然是搬分组（老行为不变）。
+        private bool _iconDrag;
+        private int _iconDragGroup = -1;
+        private int _iconDragFrom = -1;
+        private int _iconDragTo = -1;
         private Point _dragStart;
         private int _hoverZone;        // 鼠标当前压在哪条边（0 = 没有）—— 用来高亮那条边
 
@@ -1073,6 +1080,15 @@ namespace BreadLauncher
                             Theme.DrawText(g, cellApp.DisplayName, Theme.Ui(6.5f), nameR, Theme.TextSecondary,
                                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
+                        // ★组内拖图标排序的反馈（2026-10-21）：来源格压暗、目标格描一圈强调色
+                        if (_iconDrag && _dragActive && _iconDragGroup == i)
+                        {
+                            if (s == _iconDragFrom)
+                                Theme.FillRound(g, cell, corner, Color.FromArgb(120, 10, 10, 10));
+                            else if (s == _iconDragTo)
+                                Theme.DrawRound(g, cell, corner, Theme.Accent, 2f);
+                        }
+
                         // ★鼠标停在这个小图标上 → 在它下面显示应用名（面板里原本只有图标、没有名字）。
                         //   用自定义显示名（右键 →「重命名…」改的就是它）。
                         if (_hoverGroup == i && _hoverSlot == s && HoverNamesOn)
@@ -1256,6 +1272,69 @@ namespace BreadLauncher
             return AppAt(gv, slot) != null;
         }
 
+        /// <summary>
+        /// 鼠标在**某个文件夹的 3×3 图标区**里，对应哪一格（0~8）。拖图标排序时用它算落点。
+        /// ★2026-10-21 新增。算法和 GroupHitTest 里那段小图标命中一模一样（同一套 MiniPad/MiniBox/MiniGap），
+        /// 只是这里对「落在缝里」做了**取最近一格**的宽容（拖拽时没必要叫人找准缝）。
+        /// </summary>
+        private int IconSlotAt(int groupIndex, Point p)
+        {
+            if (groupIndex < 0 || groupIndex >= _groups.Count) return -1;
+            GroupView gv = _groups[groupIndex];
+            int page = PageOf(gv);
+            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - page * FolderCapacity));
+            if (countOnPage <= 0) return -1;
+            int cols = Columns;
+            int tw = TileW;
+            int x = _groupLeft + (groupIndex % cols) * (tw + GapX);
+            int y = _groupTop + (groupIndex / cols) * (TileH + GapY) - _scrollY;
+            int step = MiniBox + MiniGap;
+            int mx = p.X - x - MiniPad;
+            int my = p.Y - y - MiniPad;
+            int ci = (mx + step / 2) / step;      // 四舍五入到最近的列
+            int ri = (my + step / 2) / step;
+            if (ci < 0) ci = 0;
+            if (ci > 2) ci = 2;
+            if (ri < 0) ri = 0;
+            if (ri > 2) ri = 2;
+            int slot = ri * 3 + ci;
+            if (slot >= countOnPage) slot = countOnPage - 1;
+            return slot;
+        }
+
+        /// <summary>
+        /// 把第 groupIndex 个文件夹里「本页第 fromSlot 格」的应用移到第 toSlot 格（组内排序）。
+        /// ★2026-10-21 新增（用户要求：面板上直接拖图标就能排序，不用再进「查看全部」）。
+        /// 排完把组里的 Keys 按新顺序重建并落盘（下次打开还是这个顺序）。
+        /// </summary>
+        private void ReorderIcon(int groupIndex, int fromSlot, int toSlot)
+        {
+            if (groupIndex < 0 || groupIndex >= _groups.Count) return;
+            GroupView gv = _groups[groupIndex];
+            int baseIdx = PageOf(gv) * FolderCapacity;
+            int a = baseIdx + fromSlot;
+            int b = baseIdx + toSlot;
+            if (a < 0 || b < 0 || a >= gv.Apps.Count || b >= gv.Apps.Count || a == b) return;
+            AppEntry moved = gv.Apps[a];
+            gv.Apps.RemoveAt(a);
+            gv.Apps.Insert(b, moved);
+            if (gv.Group != null)
+            {
+                gv.Group.Keys.Clear();
+                foreach (AppEntry en in gv.Apps)
+                    if (en != null && string.IsNullOrEmpty(en.Key) == false) gv.Group.Keys.Add(en.Key);
+            }
+            PersistSettings();
+        }
+
+        /// <summary>数字键 1~9 快启：鼠标停在哪个文件夹上，就取那一页的第 n 个应用（没有就 null）。</summary>
+        private AppEntry AppForDigit(int n)
+        {
+            if (n < 1 || n > FolderCapacity) return null;
+            if (_hoverGroup < 0 || _hoverGroup >= _groups.Count) return null;
+            return AppAt(_groups[_hoverGroup], n - 1);
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             // 左键按在文件夹上（图标上也可以）就准备拖动；移动超过阈值才算真拖。
@@ -1303,10 +1382,21 @@ namespace BreadLauncher
                 GroupHitTest(e.Location, out index, out slot);
                 if (index >= 0)
                 {
-                    _dragFrom = index;
-                    _dragTo = index;
                     _dragStart = e.Location;
                     _dragActive = false;
+                    if (slot >= 0)
+                    {
+                        // ★按在**小图标**上：准备「组内拖动排序」（界面上看就是把这个应用拖到同一个文件夹的另一格）
+                        _iconDrag = true;
+                        _iconDragGroup = index;
+                        _iconDragFrom = slot;
+                        _iconDragTo = slot;
+                    }
+                    else
+                    {
+                        _dragFrom = index;
+                        _dragTo = index;
+                    }
                     _dragOnIcon = slot >= 0;
                     Capture = true;   // 抓鼠标：确保松手一定收到 MouseUp，不会卡在「拖动中」
                 }
@@ -1384,6 +1474,23 @@ namespace BreadLauncher
                     else if (ny > scr.Top) ny = scr.Top;
                     // 只记录目标并节流应用（分层窗口上每个事件都设位置会排队）
                     QueueDragTarget(new Rectangle(nx, ny, Width, Height), false);
+                    Cursor = Cursors.SizeAll;
+                    base.OnMouseMove(e);
+                    return;
+                }
+            }
+
+            // ★组内拖图标（排序）：移动超过阈值才算真拖，否则就是一次普通点击（启动应用）
+            if (_iconDrag)
+            {
+                int needIcon = Theme.Px(this, 10);
+                if (_dragActive == false
+                    && Math.Abs(e.X - _dragStart.X) + Math.Abs(e.Y - _dragStart.Y) > needIcon)
+                    _dragActive = true;
+                if (_dragActive)
+                {
+                    int to = IconSlotAt(_iconDragGroup, e.Location);
+                    if (to != _iconDragTo) { _iconDragTo = to; Invalidate(); }
                     Cursor = Cursors.SizeAll;
                     base.OnMouseMove(e);
                     return;
@@ -1495,6 +1602,24 @@ namespace BreadLauncher
                 }
                 // 没移动 → 继续往下走：**点空白什么都不做**（关闭那条路早就删了；能走到这里说明
                 // 按下去几乎没动，就当成一次普通点击交给下面处理）
+            }
+
+            // ★组内拖图标结束：真拖了就重排，没拖就不管（继续往下走 = 当普通点击处理，启动应用）
+            if (_iconDrag)
+            {
+                bool iconWasDragging = _dragActive;
+                _iconDrag = false;
+                _dragActive = false;
+                int ig = _iconDragGroup, ifrom = _iconDragFrom, ito = _iconDragTo;
+                _iconDragGroup = -1; _iconDragFrom = -1; _iconDragTo = -1;
+                if (iconWasDragging)
+                {
+                    _downValid = false;
+                    Cursor = Cursors.Default;
+                    if (ig >= 0 && ifrom >= 0 && ito >= 0 && ifrom != ito) ReorderIcon(ig, ifrom, ito);
+                    Invalidate();
+                    return;
+                }
             }
 
             // 拖动结束：按落点重排分组，并且这次不能再当成「点击」
@@ -1637,6 +1762,23 @@ namespace BreadLauncher
         protected override void OnKeyDown(KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Escape) { Close(); e.SuppressKeyPress = true; return; }
+
+            // ★2026-10-21 新增：**数字键 1~9 = 快启**。
+            //   鼠标停在哪个文件夹上，就启动那一页的第 N 个应用（和点图标一样走 LaunchEntry）。
+            //   面板上没有输入框，数字键不会跟别人抢；菜单/模态框开着时不生效。
+            int digit = 0;
+            if (e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9) digit = e.KeyCode - Keys.D0;
+            else if (e.KeyCode >= Keys.NumPad1 && e.KeyCode <= Keys.NumPad9) digit = e.KeyCode - Keys.NumPad0;
+            if (digit > 0 && PreviewMode == false && _modalOpen == false)
+            {
+                AppEntry quick = AppForDigit(digit);
+                if (quick != null)
+                {
+                    e.SuppressKeyPress = true;
+                    LaunchEntry(quick);
+                    return;
+                }
+            }
             base.OnKeyDown(e);
         }
 
@@ -2742,7 +2884,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.18\n\n" +
+                    "BreadLauncher 1.19\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
