@@ -992,13 +992,13 @@ namespace BreadLauncher
                 Rectangle box = new Rectangle(x, y, tw, th);
                 // ★2026-10-21：卡片本体改成**半透明**（透出后面的亚克力模糊）。
                 //   不透明度在 Theme.CardAlpha；文字/图标仍然实心（不能模糊）。
-                Color cardFill = hoverBody ? Theme.SurfaceHover : Theme.Surface;
-                if (Theme.CardAlpha < 255)
-                    cardFill = Color.FromArgb(Theme.CardAlpha, cardFill.R, cardFill.G, cardFill.B);
-                Theme.FillRound(g, box, radius, cardFill);
-                Color cardEdge = Theme.Border;
-                if (Theme.CardAlpha < 255)
-                    cardEdge = Color.FromArgb(Math.Min(255, Theme.CardAlpha + 40), cardEdge.R, cardEdge.G, cardEdge.B);
+                Color cardBase = hoverBody ? Theme.SurfaceHover : Theme.Surface;
+                int cardAlpha = hoverBody ? Theme.CardHoverAlpha : Theme.CardAlpha;
+                if (cardAlpha > 255) cardAlpha = 255;
+                if (cardAlpha < 0) cardAlpha = 0;
+                Theme.FillRound(g, box, radius, Color.FromArgb(cardAlpha, cardBase.R, cardBase.G, cardBase.B));
+                // ★边框单独一个不透明度（用户要「只剩一条线」）：背景几乎全透了，线得看得见
+                Color cardEdge = Color.FromArgb(Theme.CardBorderAlpha, Theme.Border.R, Theme.Border.G, Theme.Border.B);
                 Theme.DrawRound(g, box, radius, cardEdge, 1f);
 
                 // 拖动反馈：来源压暗，落点描一圈强调色
@@ -2742,7 +2742,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.17\n\n" +
+                    "BreadLauncher 1.18\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
