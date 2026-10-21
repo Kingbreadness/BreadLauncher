@@ -537,7 +537,10 @@ namespace BreadLauncher
                 (_settings != null && _settings.PanelW > 0) ? _settings.PanelW : Theme.Px(this, 640),
                 (_settings != null && _settings.PanelH > 0) ? _settings.PanelH : Theme.Px(this, 400));
             Theme.ApplyRoundedCorners(this);
-            _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);   // 返回值 = 实际生效没有
+            // ★2026-10-21：菜单里的「亚克力」开关已按用户要求删掉 → **永远开着**。
+            //   老配置里存的 `Acrylic=false` 也强制改回 true（否则他自己都没办法再打开了）。
+            _settings.Acrylic = true;
+            _acrylicActive = Theme.ApplyBackdrop(this, true);   // 返回值 = 实际生效没有
 
             // ★★启动时**不许弹任何提示**（用户 2026-09-28 明确要求：第一眼就弹窗很烦，
             //   「用户用的时候自行接纳就是了」）。以前这里有一次性的「亚克力已开启」提示框，
@@ -2628,17 +2631,9 @@ namespace BreadLauncher
         private void FillSettingsMenu(ContextMenuStrip menu)
         {
             menu.Items.Add("刷新应用列表", null, delegate { RefreshAppList(); });
-            // ★这三条是开关：**打勾 = 当前状态**，文字也写清「已开启 / 已关闭」。
-            //   以前写的是「亚克力半透明：关」=「点一下会关掉」——用户反馈分不清是状态还是动作（容易弄混）。
-            // ★亚克力那条的文字还要**如实**：系统不支持时面板其实是不透明的（`_acrylicActive=false`），
-            //   那时候还写「透出桌面」就是假话 —— 换成「这台系统不支持」。
-            // ★2026-10-20：**「空白处会穿透鼠标」这句已经从菜单里删掉** —— 改成逐像素 alpha 之后
-            //   面板整块吃鼠标，不再穿透（用户报的就是这个），这句话留着就是假话。
-            //   这种情况以前是弹一个说明框，用户 2026-09-28 要求：**不弹窗**，写进菜单文字里就行。
-            string acrylicLabel = (_settings.Acrylic && _acrylicActive == false)
-                ? "亚克力半透明（这台系统不支持，面板保持不透明）"
-                : "亚克力半透明（透出桌面背景）";
-            menu.Items.Add(ToggleItem(acrylicLabel, _settings.Acrylic, delegate { ToggleAcrylic(); }));
+            // ★剩下两条是开关：**打勾 = 当前状态**，文字也写清「已开启 / 已关闭」。
+            // ★2026-10-21 用户要求：**把「亚克力半透明」那个开关从菜单里去掉**（原话：「我建议是把那个关掉透明的按钮去掉吧，我就感觉透明最好看」）。
+            //   以后永远开着：老配置里存的 `Acrylic=false` 也在 OnLoad 里强制改回 true。
             menu.Items.Add(ToggleItem("鼠标悬停显示名字", _settings.HoverNames, delegate { ToggleHoverNames(); }));
             menu.Items.Add(ToggleItem("启动应用后关闭面板", _settings.CloseAfterLaunch, delegate { ToggleCloseAfterLaunch(); }));
 
@@ -2706,19 +2701,6 @@ namespace BreadLauncher
             Invalidate();
         }
 
-        private void ToggleAcrylic()
-        {
-            _settings.Acrylic = !_settings.Acrylic;
-            PersistSettings();
-            _acrylicActive = Theme.ApplyBackdrop(this, _settings.Acrylic);
-            Invalidate(true);
-            // ★★用户 2026-09-28 明确要求：**亚克力相关的提示框全部删掉** —— 启动时不弹、手动开关时也不弹
-            //   （「用户用的时候自行接纳就是了」）。代价写在设置菜单那一行字里：
-            //   「亚克力半透明（空白处会穿透鼠标）：已开启」；
-            //   「这台系统不支持」也不再弹窗，改成**菜单文字如实显示**（见 FillSettingsMenu 里那段）。
-            //   别再加回任何 MessageBox。
-        }
-
         private void ClearIcons()
         {
             lock (this) { _iconGen++; _pendingIcons = 0; }   // 换代：在途的取图回调作废（和 RefreshAppList 一样）
@@ -2752,7 +2734,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.15\n\n" +
+                    "BreadLauncher 1.16\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

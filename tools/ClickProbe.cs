@@ -1641,14 +1641,14 @@ namespace BreadLauncher
                     //   （以前是「亚克力半透明：关」=「点一下会关掉」，用户反馈分不清状态还是动作）
                     ContextMenuStrip sm = f.BuildSettingsMenu();
                     string stexts = "";
-                    bool acrylicOk = false, hoverOk = false, closeOk = false;
+                    bool acrylicItem = false, hoverOk = false, closeOk = false;
                     for (int i = 0; i < sm.Items.Count; i++)
                     {
                         string tx = sm.Items[i].Text;
                         stexts += tx + " | ";
                         ToolStripMenuItem mi = sm.Items[i] as ToolStripMenuItem;      // Checked 在 ToolStripMenuItem 上，不在 ToolStripItem 上
                         bool ck = mi != null && mi.Checked;
-                        if (tx.StartsWith("亚克力半透明")) acrylicOk = (ck == stName.Acrylic) && tx.EndsWith(ck ? "已开启" : "已关闭");
+                        if (tx.StartsWith("亚克力半透明")) acrylicItem = true;   // ★2026-10-21 用户要求去掉这个开关
                         if (tx.StartsWith("鼠标悬停显示名字")) hoverOk = (ck == stName.HoverNames) && tx.EndsWith(ck ? "已开启" : "已关闭");
                         if (tx.StartsWith("启动应用后关闭面板")) closeOk = (ck == stName.CloseAfterLaunch) && tx.EndsWith(ck ? "已开启" : "已关闭");
                     }
@@ -1667,8 +1667,9 @@ namespace BreadLauncher
                     }
                     catch (Exception) { }
                     sm.Dispose();
-                    Check(acrylicOk && hoverOk && closeOk,
-                        "设置菜单三个开关：打勾与文字都表示**当前状态**（" + stexts + "）");
+                    Check(acrylicItem == false && hoverOk && closeOk,
+                        "设置菜单：**没有亚克力开关**（用户 2026-10-21 要求去掉，透明永远开着）、" +
+                        "另外两个开关打勾与文字都表示**当前状态**（" + stexts + "）");
 
                     // ⑨ 启动时**不许弹任何提示**（用户 2026-09-28 明确要求：「第一眼有个弹窗」很烦）。
                     //    亚克力那两条提示（「已开启」和「这台系统不支持」）连同方法一起删掉了 ——
