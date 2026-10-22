@@ -1048,8 +1048,6 @@ namespace BreadLauncher
                         Rectangle cell = new Rectangle(x + miniPad + mc * (miniBox + miniGap),
                                                        y + miniPad + mr * (miniBox + miniGap),
                                                        miniBox, miniBox);
-                        if (_hoverGroup == i && _hoverSlot == s)
-                            Theme.FillRound(g, cell, corner, Theme.HoverStrong);
 
                         AppEntry cellApp = gv.Apps[idx];
                         // 「名字常驻显示」（右键 → 勾上）：图标让出下面一条给名字；名字**只在本格内**画，
@@ -1060,6 +1058,24 @@ namespace BreadLauncher
                         if (withLabel)
                             withLabel = NameLabelLayout(cell, miniGap, tw, thAll, x, y, out inner, out nameR);
                         Bitmap icon = _icons == null ? null : _icons.Get(cellApp, MiniIconSize);
+
+                        // ★2026-10-21 用户报「鼠标放上去出现的那个阴影不整齐」：
+                        //   以前悬停底色画在**整个格子**（miniBox）上、圆角还很大，
+                        //   而图标是 54px 的**方角**图片 → 图标四个角会比底色的圆角更外，看着就是「不齐」。
+                        //   现在：底色跟着**图标本身的矩形**四周各放 4px，圆角收小到 Px(6) —— 四边留边一样宽；
+                        //   颜色也从实心深灰换成一层**很淡的白**（不再像一块阴影）。
+                        Rectangle iconRect = (icon == null)
+                            ? cell
+                            : new Rectangle(cell.X + (cell.Width - icon.Width) / 2,
+                                            cell.Y + (cell.Height - icon.Height) / 2,
+                                            icon.Width, icon.Height);
+                        if (_hoverGroup == i && _hoverSlot == s)
+                        {
+                            // ★底色画在**整个格子**上（不跟图标本身的透明边走）：格子是固定尺寸，四周留边天生一样宽；
+                            //   圆角只留 Px(3) —— 图标是方角的，大圆角会让图标四角探出底色外面，看着就是「不齐」。
+                            Theme.FillRound(g, cell, Theme.Px(this, 4), Color.FromArgb(70, 255, 255, 255));
+                        }
+
                         if (icon == null)
                         {
                             // 取不到图标（系统也只给得出白纸）：画首字母色块，比白纸好看也好认
@@ -2921,7 +2937,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.23\n\n" +
+                    "BreadLauncher 1.24\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
