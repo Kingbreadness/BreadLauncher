@@ -466,9 +466,8 @@ namespace BreadLauncher
             get
             {
                 CreateParams cp = base.CreateParams;
-                // ★2026-10-21 删掉了 CS_DROPSHADOW：分层窗口上它画出来的是一圈**硬的、偏一点点的**灰影，
-                //   跟面板自己那条圆角边框线对不上（用户 2026-10-21 报「阴影有的会对不上，看着难受」）。
-                //   面板是逐像素 alpha 的分层窗口，系统投影本来就不可靠 —— 干脆不要。
+                // ★2026-10-21 用户看了 A/B 对比图：「左边好一点，右边多了条线」—— ♀ 恢复系统投影（CS_DROPSHADOW）。
+                //   v1.23 曾经删过它，但那次的“少了阴影 + 多了一条圆角边框线”看着反而更怪（用户不喜欢）。
                 return cp;
             }
         }
@@ -917,9 +916,9 @@ namespace BreadLauncher
             //   控件本身还留着 —— 它负责吃鼠标、hover/按下状态、弹菜单的锚点。
             RenderFooterButtons(g);
 
-            // ★边框跟 DWM 的圆角一起画：方角矩形边框会被 DWM 的圆角裁掉雄角，
-            //   剩下两段直线在角上碰不上 → 看着就像「边框/阴影对不上」。
-            Theme.DrawRound(g, new Rectangle(0, 0, Width - 1, Height - 1), Theme.Px(this, 12), Theme.Border, 1f);
+            // 边框：俁 v1.22 的画法（方角矩形）。用户 2026-10-21 看 A/B 图后选了这个（右边的圆角线看着多了一条）。
+            using (Pen pen = new Pen(Theme.Border))
+                g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
         }
 
         /// <summary>把底栏三个按钮画进整帧（见 FlatButton.RenderTo 的说明）。</summary>
@@ -2937,7 +2936,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.24\n\n" +
+                    "BreadLauncher 1.25\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
