@@ -24,6 +24,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -155,6 +156,72 @@ namespace BreadLauncher
                 _mem[cacheKey] = result;
             }
             return result;
+        }
+
+        /// <summary>
+        /// 图标里**真正看得见的那块**（不透明像素的包围盒，单位是图标自己的像素）。
+        /// ★为什么需要：图标 PNG 常常自带透明留边，而且**每个应用都不一样**（本机实测同一档尺寸下可见宽度
+        ///   从 39px 到 54px 都有）。悬停高亮如果按「格子」画，留边大的图标看着就一边宽一边窄 ——
+        ///   用户 2026-10-21 / 10-23 两次都报「阴影对不齐」，根因就是这里。
+        /// ★按 Bitmap 实例缓存（弱引用表）：图标缓存被清掉后换的是新实例，旧条目自动回收，不会串味。
+        /// </summary>
+        public static Rectangle VisibleBounds(Bitmap bmp)
+        {
+            if (bmp == null) return Rectangle.Empty;
+            lock (_visLock)
+            {
+                BoxHolder hit;
+                if (_visCache.TryGetValue(bmp, out hit)) return hit.R;
+            }
+            Rectangle r = ComputeVisibleBounds(bmp);
+            lock (_visLock)
+            {
+                BoxHolder hit2;
+                if (_visCache.TryGetValue(bmp, out hit2)) return hit2.R;   // 另一个线程刚算好：用它的，别重复 Add（会抛）
+                BoxHolder nb = new BoxHolder();
+                nb.R = r;
+                try { _visCache.Add(bmp, nb); }
+                catch (ArgumentException) { }
+            }
+            return r;
+        }
+
+        private sealed class BoxHolder { public Rectangle R; }
+        private static readonly ConditionalWeakTable<Bitmap, BoxHolder> _visCache =
+            new ConditionalWeakTable<Bitmap, BoxHolder>();
+        private static readonly object _visLock = new object();
+
+        /// <summary>扫一遍像素取包围盒。★用 LockBits 一次拷出来，别用 GetPixel（一张 54×54 要慢两个数量级）。</summary>
+        private static Rectangle ComputeVisibleBounds(Bitmap bmp)
+        {
+            Rectangle full = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            const int MinAlpha = 24;      // 太淡的像素（图标自带的柔和阴影边）不算「看得见」
+            try
+            {
+                BitmapData bd = bmp.LockBits(full, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    byte[] buf = new byte[bd.Stride * bmp.Height];
+                    Marshal.Copy(bd.Scan0, buf, 0, buf.Length);
+                    int x0 = int.MaxValue, y0 = int.MaxValue, x1 = -1, y1 = -1;
+                    for (int y = 0; y < bmp.Height; y++)
+                    {
+                        int row = y * bd.Stride;
+                        for (int x = 0; x < bmp.Width; x++)
+                        {
+                            if (buf[row + x * 4 + 3] < MinAlpha) continue;    // BGRA：+3 是 alpha
+                            if (x < x0) x0 = x;
+                            if (x > x1) x1 = x;
+                            if (y < y0) y0 = y;
+                            if (y > y1) y1 = y;
+                        }
+                    }
+                    if (x1 < 0) return full;                                    // 整张全透明：按整张算
+                    return new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+                }
+                finally { bmp.UnlockBits(bd); }
+            }
+            catch (Exception) { return full; }
         }
 
         /// <summary>后台取图标，完成后回调（回调在后台线程，调用方自己切回 UI 线程）。</summary>

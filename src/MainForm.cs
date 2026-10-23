@@ -969,6 +969,68 @@ namespace BreadLauncher
             catch (Exception) { }
         }
 
+        /// <summary>
+        /// 小图标「图形真正占的那块」：图标（取不到时的首字母色块）都画在这个矩形里。
+        /// ★悬停高亮也用它 —— **同一件事只许算一处**。2026-10-21 那版把高亮画在整格、图标画在格内，
+        ///   两套几何一漂就成了用户报的「对不齐」（名字常驻的格子底边多出 24px）。
+        /// </summary>
+        private Rectangle IconArtRect(Rectangle cell, Rectangle inner, Bitmap icon, bool withLabel)
+        {
+            if (icon == null)
+            {
+                int phPad = Theme.Px(this, withLabel ? 5 : 3);
+                return new Rectangle(inner.X + phPad, inner.Y + phPad,
+                                     Math.Max(8, inner.Width - phPad * 2),
+                                     Math.Max(8, inner.Height - phPad * 2));
+            }
+            if (withLabel)
+            {
+                int side = Math.Min(inner.Width, inner.Height);       // 缩小画（图是 MiniIconSize 的）
+                return new Rectangle(inner.X + (inner.Width - side) / 2,
+                                     inner.Y + (inner.Height - side) / 2, side, side);
+            }
+            return new Rectangle(cell.X + (cell.Width - icon.Width) / 2,
+                                 cell.Y + (cell.Height - icon.Height) / 2,
+                                 icon.Width, icon.Height);
+        }
+
+        /// <summary>
+        /// 悬停时贴着图标**看得见的图形**画一圈细线（四边等宽）。
+        /// ★为什么不画一块整格底色（2026-10-21 那版）：
+        ///   ① 图标 PNG 自带透明留边，每个应用不一样（实测可见宽度 39~54px）→ 底色一边宽一边窄；
+        ///   ② 名字常驻的格子图标只占上面 39px，整格底色会甩到名字下面（多 24px）。
+        ///   现在底色整个去掉，只留这圈线：既保住「鼠标在哪一格」的反馈，又不可能歪。
+        /// </summary>
+        private void DrawIconHover(Graphics g, Rectangle cell, Rectangle art, Bitmap icon)
+        {
+            Rectangle r = IconHoverRingRect(cell, art, icon);
+            if (r.Width < 4 || r.Height < 4) return;
+            Theme.DrawRound(g, r, Theme.Px(this, 6), Color.FromArgb(150, 255, 255, 255), 1.5f);
+        }
+
+        /// <summary>悬停那圈线的矩形（纯计算，探针可以直接断言它）。</summary>
+        private Rectangle IconHoverRingRect(Rectangle cell, Rectangle art, Bitmap icon)
+        {
+            Rectangle r = art;
+            if (icon != null)
+            {
+                Rectangle bb = IconService.VisibleBounds(icon);
+                if (bb.Width > 0 && bb.Height > 0 && bb.Width <= icon.Width && bb.Height <= icon.Height)
+                {
+                    double sx = (double)art.Width / icon.Width;
+                    double sy = (double)art.Height / icon.Height;
+                    r = new Rectangle(art.X + (int)Math.Round(bb.X * sx),
+                                      art.Y + (int)Math.Round(bb.Y * sy),
+                                      Math.Max(1, (int)Math.Round(bb.Width * sx)),
+                                      Math.Max(1, (int)Math.Round(bb.Height * sy)));
+                }
+            }
+            int pad = Theme.Px(this, 2);
+            r.Inflate(pad, pad);
+            r.Intersect(cell);
+            return r;
+        }
+
         private void DrawGroups(Graphics g)
         {
             int cols = Columns;
@@ -1058,45 +1120,24 @@ namespace BreadLauncher
                             withLabel = NameLabelLayout(cell, miniGap, tw, thAll, x, y, out inner, out nameR);
                         Bitmap icon = _icons == null ? null : _icons.Get(cellApp, MiniIconSize);
 
-                        // ★2026-10-21 用户报「鼠标放上去出现的那个阴影不整齐」：
-                        //   以前悬停底色画在**整个格子**（miniBox）上、圆角还很大，
-                        //   而图标是 54px 的**方角**图片 → 图标四个角会比底色的圆角更外，看着就是「不齐」。
-                        //   现在：底色跟着**图标本身的矩形**四周各放 4px，圆角收小到 Px(6) —— 四边留边一样宽；
-                        //   颜色也从实心深灰换成一层**很淡的白**（不再像一块阴影）。
-                        Rectangle iconRect = (icon == null)
-                            ? cell
-                            : new Rectangle(cell.X + (cell.Width - icon.Width) / 2,
-                                            cell.Y + (cell.Height - icon.Height) / 2,
-                                            icon.Width, icon.Height);
+                        // ★★2026-10-23（v1.26）用户第二次报「悬停的阴影对不齐」。实测根因是**两套几何各算一遍**：
+                        //   高亮画在「整个格子」（MiniBox=63px），图标却画在格子里另一处 —— 名字常驻的格子
+                        //   图标只占上面 39px，于是高亮底边甩到名字下面，多出 24px（本机实测就这 4 个应用最明显）。
+                        //   现在把「图形真正占的那块」算成一份 art，**画和悬停共用**，并且按图标自己的
+                        //   不透明像素边界（IconService.VisibleBounds）收圈 —— 四边留边因此恒等，歪不了。
+                        Rectangle art = IconArtRect(cell, inner, icon, withLabel);
                         if (_hoverGroup == i && _hoverSlot == s)
-                        {
-                            // ★底色画在**整个格子**上（不跟图标本身的透明边走）：格子是固定尺寸，四周留边天生一样宽；
-                            //   圆角只留 Px(3) —— 图标是方角的，大圆角会让图标四角探出底色外面，看着就是「不齐」。
-                            Theme.FillRound(g, cell, Theme.Px(this, 4), Color.FromArgb(70, 255, 255, 255));
-                        }
+                            DrawIconHover(g, cell, art, icon);
 
                         if (icon == null)
                         {
                             // 取不到图标（系统也只给得出白纸）：画首字母色块，比白纸好看也好认
-                            int phPad = Theme.Px(this, withLabel ? 5 : 3);
-                            Rectangle ph = new Rectangle(inner.X + phPad, inner.Y + phPad,
-                                                         Math.Max(8, inner.Width - phPad * 2),
-                                                         Math.Max(8, inner.Height - phPad * 2));
-                            Theme.DrawAppTile(g, ph, cellApp.DisplayName, Theme.Px(this, 6));
+                            Theme.DrawAppTile(g, art, cellApp.DisplayName, Theme.Px(this, 6));
                         }
                         else if (withLabel)
-                        {
-                            int side = Math.Min(inner.Width, inner.Height);      // 缩小画（图是 MiniIconSize 的）
-                            int ix = inner.X + (inner.Width - side) / 2;
-                            int iy = inner.Y + (inner.Height - side) / 2;
-                            g.DrawImage(icon, new Rectangle(ix, iy, side, side));
-                        }
+                            g.DrawImage(icon, art);                 // 缩小画（图是 MiniIconSize 的）
                         else
-                        {
-                            int ix = cell.X + (cell.Width - icon.Width) / 2;
-                            int iy = cell.Y + (cell.Height - icon.Height) / 2;
-                            g.DrawImageUnscaled(icon, ix, iy);
-                        }
+                            g.DrawImageUnscaled(icon, art.X, art.Y);
                         if (withLabel)
                             Theme.DrawText(g, cellApp.DisplayName, Theme.Ui(6.5f), nameR, Theme.TextSecondary,
                                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -2936,7 +2977,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.25\n\n" +
+                    "BreadLauncher 1.26\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
