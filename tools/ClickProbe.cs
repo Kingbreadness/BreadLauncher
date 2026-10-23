@@ -552,6 +552,11 @@ namespace BreadLauncher
                         pickerTries++;
                         if (pickerTries < 15) { t2.Start(); return; }
                         Say("（等了 " + (pickerTries * 1200) + "ms 也没等到「添加应用」窗口，跳过这段检查）");
+                        // ★2026-10-23：光 Say 一句不够 —— 那 30 多条断言**整段没跑**，
+                        //   而报告末尾的「跳过汇总」里看不到它，读报告的人会以为「0 FAIL = 全验过了」。
+                        //   实测撞到过两次（刚编译完、机器忙时选择器首帧慢）：PASS 从 151 掉到 117 但 FAIL 仍是 0。
+                        NoteSkip("「添加应用」窗口等了 " + (pickerTries * 1200) + "ms 也没开出来 → 勾选 / 框选 / 来源菜单 / 重扫"
+                                 + " 那 30 多条整段没跑（机器忙时偶发，重跑一次就恢复；别把「条数少但 0 FAIL」当成全过）");
                         return;
                     }
                     foreach (Form open in Application.OpenForms)
