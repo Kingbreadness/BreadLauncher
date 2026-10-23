@@ -6,10 +6,10 @@
 
 > 项目：**BreadLauncher**（零安装的 Windows 启动面板；下文路径都相对仓库根目录）
 > 一个 Win11 开始菜单风格的应用启动面板：主体是「大文件夹」分组（3×3 小图标，点图标直接启动），单文件、零安装、关掉即退出。
-> 规模：`src\` 13 个文件、**8514 行**（2026-09-28 00:0x 实测）。**口径要写清楚，不然每次都能吵起来**：
-> `((Get-ChildItem src\*.cs) | ForEach-Object { (Get-Content $_.FullName).Count } | Measure-Object -Sum).Sum` = **8514**（含空行、末行无换行也算一行）；
-> 而 `Get-Content src\*.cs | Measure-Object -Line` = **7780**（只数非空行）。**两个都对，看你要哪个口径** —— 引用数字时把它们一起带上。
-> 分项（同一时刻）：MainForm 2462 / Dialogs 1146 / Controls 985 / IconService 949 / AppsFolderScanner 707 / ConfigStore 495 / Theme 485 / Program 445 / GroupAppsForm 400 / Model 167 / Groups 75 / PinyinLetter 73 / Launcher 65。
+> 规模：`src\` 13 个文件、**9315 行**（2026-10-23 实测；这个数会随每次改动漂，引用前现场数一遍）。**口径要写清楚，不然每次都能吵起来**：
+> `((Get-ChildItem src\*.cs) | ForEach-Object { (Get-Content $_.FullName).Count } | Measure-Object -Sum).Sum` = **9315**（含空行、末行无换行也算一行）；
+> 而只数非空行 = **8511**（`Get-Content src\*.cs -Raw` 按行切开、去掉空行后计数；`Measure-Object -Line` 在这台机器上会把没有结尾换行的末行漏掉，别用它）。**两个都对，看你要哪个口径** —— 引用数字时把它们一起带上。
+> 分项（同一时刻）：MainForm 2957 / Dialogs 1211 / Controls 1004 / IconService 952 / AppsFolderScanner 714 / Theme 702 / ConfigStore 541 / Program 444 / GroupAppsForm 410 / Model 167 / Groups 75 / PinyinLetter 73 / Launcher 65。
 > 行数改得勤时几分钟就能漂几十行，**引用前自己重数一遍**，别抄这一行。
 
 ---
