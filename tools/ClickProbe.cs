@@ -1683,155 +1683,61 @@ namespace BreadLauncher
                     f.Location = oldLoc;
                     Check(true, "悬停在第一个小图标上（_hoverSlot=0）→ 出图 build\\panel-hover-name.png（名字标签）");
 
-                    // ---------- 6.8) 小图标悬停高亮：贴图标**看得见的图形**、四边等宽（v1.26） ----------
-                    // ★2026-10-23 用户第二次报：「鼠标放到文件夹里面应用上，后面的阴影有的时候会对不齐」。
-                    //   实测根因：高亮画在**整格**（MiniBox=63px），图标只占 54px；名字常驻的格子图标只占上面
-                    //   39px → 高亮底边甩到名字下面，多出 24px（他配置里就这 4 个应用最显眼）。
-                    //   修法：去掉底色，改成贴着图标**不透明像素边界**的一圈细线。
-                    //   这条断言**看像素**：同一格渲染两帧（没高亮 / 有高亮）相减，变化区域的包围盒就是那圈线
-                    //   → 谁把绘制改回「整格底色」，它一定红（变异证据见 build\audit\mut7-evidence-*）。
+                    // ---------- 6.8) 小图标悬停：**一个像素都不许变**（v1.27，用户 2026-10-23 拍板） ----------
+                    // 用户原话：「算了，还是不要这种软件周围的东西了，没有必要，像以前一样就行」。
+                    // 以前两版（整格淡白块 / 贴图标一圈细线）都因为「跟着格子画」而看着对不齐（docs\dev-notes 坑 55），
+                    // 所以干脆**不画任何悬停标记**：文件夹卡片的边框本身在鼠标进来时会亮起来，那就是反馈。
+                    // 这条断言**看像素**：同一格渲染两帧（鼠标在这张卡片上但不在图标上 / 悬停在这个图标上），
+                    // 要求**逐像素完全相同**。谁以后又画上底色或圈线，它立刻红。
                     try
                     {
                         MethodInfo cellRectH = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
-                        MethodInfo artRectH = typeof(MainForm).GetMethod("IconArtRect", BindingFlags.NonPublic | BindingFlags.Instance);
-                        MethodInfo ringRectH = typeof(MainForm).GetMethod("IconHoverRingRect", BindingFlags.NonPublic | BindingFlags.Instance);
-                        MethodInfo labelH = typeof(MainForm).GetMethod("NameLabelLayout", BindingFlags.NonPublic | BindingFlags.Instance);
                         FieldInfo hgH = typeof(MainForm).GetField("_hoverGroup", BindingFlags.NonPublic | BindingFlags.Instance);
                         FieldInfo hsH = typeof(MainForm).GetField("_hoverSlot", BindingFlags.NonPublic | BindingFlags.Instance);
-                        IconService icH = (IconService)Field(f, "_icons");
-                        int miniIconH = (int)Prop(f, "MiniIconSize");
-                        int padH = Theme.Px(f, 2);
-
                         bool hoverWasH = stName.HoverNames;
                         stName.HoverNames = false;         // 名字浮层会一起进差异图；只在内存里改，不落盘
-                        // 图标还没取完的话两帧会差在图标上（不是高亮）—— 先等它取完
                         for (int iHw = 0; iHw < 400 && f.PendingIcons > 0; iHw++) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
                         List<GroupView> gsH = (List<GroupView>)Field(f, "_groups");
-                        int cellsH = 0, labCellsH = 0, emptyH = 0, badBoxH = 0, badEvenH = 0, badTightH = 0, badRectH = 0;
-                        string firstEmptyH = "", firstBoxH = "", firstEvenH = "", firstTightH = "", firstRectH = "";
-                        int worstEvenH = 0, worstSlackH = 0;
-
+                        int cellsH = 0, dirtyH = 0;
+                        string firstDirtyH = "";
                         for (int giH = 0; giH < gsH.Count; giH++)
                         {
                             GroupView gvH = gsH[giH];
-                            // ★翻回第 1 页：MiniCellRect 是按**当前页**算的；跑到这里时前面的用例可能已经把
-                            //   某个组翻到最后一页，那样第 1~8 格根本没有应用可画（第一版断言就漏了这个前提，
-                            //   9 格里 6 格「没画出高亮」是假 FAIL）。
+                            // MiniCellRect 按**当前页**算：先翻回第 1 页，否则第 1~8 格没有应用可画（第一版就吃了这个假 FAIL）
                             setPageM.Invoke(f, new object[] { gvH, 0 });
                             int nH = Math.Min(9, gvH.Apps.Count);
                             for (int sH = 0; sH < nH; sH++)
                             {
                                 AppEntry apH = gvH.Apps[sH];
                                 Rectangle cellH = (Rectangle)cellRectH.Invoke(f, new object[] { giH, sH });
-                                Bitmap icoH = icH == null ? null : icH.Get(apH, miniIconH);
-                                Rectangle innerH = cellH, nameRH = Rectangle.Empty;
-                                bool labH = apH.ShowName;
-                                if (labH)
-                                {
-                                    object[] la = new object[] { cellH, miniGap, tw, tileH, cellH.X - miniPad, cellH.Y - miniPad, null, null };
-                                    labH = (bool)labelH.Invoke(f, la);
-                                    innerH = (Rectangle)la[6];
-                                    nameRH = (Rectangle)la[7];
-                                }
-                                Rectangle artH = (Rectangle)artRectH.Invoke(f, new object[] { cellH, innerH, icoH, labH });
-                                Rectangle ringH = (Rectangle)ringRectH.Invoke(f, new object[] { cellH, artH, icoH });
-
-                                // 图标「看得见的那块」（跟绘制同一套缩放）
-                                Rectangle visH = artH;
-                                if (icoH != null)
-                                {
-                                    Rectangle bbH = IconService.VisibleBounds(icoH);
-                                    if (bbH.Width > 0 && bbH.Height > 0)
-                                    {
-                                        double sxH = (double)artH.Width / icoH.Width;
-                                        double syH = (double)artH.Height / icoH.Height;
-                                        visH = new Rectangle(
-                                            artH.X + (int)Math.Round(bbH.X * sxH),
-                                            artH.Y + (int)Math.Round(bbH.Y * syH),
-                                            Math.Max(1, (int)Math.Round(bbH.Width * sxH)),
-                                            Math.Max(1, (int)Math.Round(bbH.Height * syH)));
-                                    }
-                                }
-
-                                // 像素级取证：同一格两帧相减（只有「高亮」这一个变量在变）
-                                hgH.SetValue(f, giH);
-                                hsH.SetValue(f, -2);
                                 Rectangle diffH;
+                                hgH.SetValue(f, giH);
+                                hsH.SetValue(f, -2);                       // 鼠标在这张卡片上，但不在图标上
                                 using (Bitmap fa = f.RenderToBitmap())
                                 {
-                                    hsH.SetValue(f, sH);
+                                    hsH.SetValue(f, sH);                    // 悬停在这个图标上
                                     using (Bitmap fb = f.RenderToBitmap())
                                         diffH = DiffBox(fa, fb, cellH, 6);
                                 }
                                 cellsH++;
-                                if (labH) labCellsH++;
-
-                                if (diffH.IsEmpty)
+                                if (!diffH.IsEmpty)
                                 {
-                                    emptyH++;
-                                    if (firstEmptyH.Length == 0)
-                                        firstEmptyH = "组" + giH + "格" + sH + "「" + apH.DisplayName + "」";
-                                    continue;
-                                }
-                                if (!cellH.Contains(diffH))
-                                {
-                                    badBoxH++;
-                                    if (firstBoxH.Length == 0) firstBoxH = "组" + giH + "格" + sH + " 画出格子了：" + diffH;
-                                }
-                                // ① 四边等宽（相对看得见的图形）
-                                int lH = visH.Left - diffH.Left, rH = diffH.Right - visH.Right;
-                                int tH = visH.Top - diffH.Top, bH = diffH.Bottom - visH.Bottom;
-                                int evenH = Math.Max(Math.Abs(lH - rH), Math.Abs(tH - bH));
-                                if (evenH > worstEvenH) worstEvenH = evenH;
-                                if (evenH > 2)
-                                {
-                                    badEvenH++;
-                                    if (firstEvenH.Length == 0)
-                                        firstEvenH = "组" + giH + "格" + sH + "「" + apH.DisplayName + "」左右留边 "
-                                                     + lH + "/" + rH + "、上下留边 " + tH + "/" + bH;
-                                }
-                                // ② 不许再画成「一大块」：必须紧贴图标（旧写法整格 63px，一眼就超）
-                                int slackH = Math.Max((diffH.Width - visH.Width) / 2, (diffH.Height - visH.Height) / 2);
-                                if (slackH > worstSlackH) worstSlackH = slackH;
-                                if (slackH > padH + 2)
-                                {
-                                    badTightH++;
-                                    if (firstTightH.Length == 0)
-                                        firstTightH = "组" + giH + "格" + sH + "「" + apH.DisplayName + "」高亮 "
-                                                      + diffH.Width + "x" + diffH.Height + "，图标只有 " + visH.Width + "x" + visH.Height;
-                                }
-                                // ③ 画出来的那圈线必须就是 IconHoverRingRect 算的那块（±2px 抗锯齿）
-                                if (Math.Abs(diffH.Left - ringH.Left) > 2 || Math.Abs(diffH.Top - ringH.Top) > 2
-                                    || Math.Abs(diffH.Width - ringH.Width) > 2 || Math.Abs(diffH.Height - ringH.Height) > 2)
-                                {
-                                    badRectH++;
-                                    if (firstRectH.Length == 0)
-                                        firstRectH = "组" + giH + "格" + sH + "：实测 " + diffH + " / 期望 " + ringH;
+                                    dirtyH++;
+                                    if (firstDirtyH.Length == 0)
+                                        firstDirtyH = "组" + giH + "格" + sH + "「" + apH.DisplayName + "」变了 " + diffH;
                                 }
                             }
                         }
                         hgH.SetValue(f, -1);
                         hsH.SetValue(f, -2);
                         stName.HoverNames = hoverWasH;
-
-                        Check(cellsH > 0 && emptyH == 0,
-                            "悬停小图标时**真的画了高亮**（" + cellsH + " 格里 " + (cellsH - emptyH) + " 格画出来了"
-                            + (emptyH > 0 ? "；没画的是 " + emptyH + " 格，第一处 " + firstEmptyH : "") + "）");
-                        Check(badEvenH == 0,
-                            "悬停高亮四边等宽（贴图标看得见的图形，左右/上下留边差 ≤2px）：共 " + cellsH
-                            + " 格（其中名字常驻 " + labCellsH + " 格），最差差 " + worstEvenH + "px"
-                            + (badEvenH > 0 ? "；不合格 " + badEvenH + " 格，第一处 " + firstEvenH : ""));
-                        Check(badTightH == 0,
-                            "悬停高亮紧贴图标、不再是「整格一大块」（两侧留边 ≤ " + (padH + 2) + "px）：最宽的那格多出 "
-                            + worstSlackH + "px" + (badTightH > 0 ? "；不合格 " + badTightH + " 格，第一处 " + firstTightH : ""));
-                        Check(badBoxH == 0 && badRectH == 0,
-                            "悬停高亮没画出自己那一格，位置也和 IconHoverRingRect 一致（±2px）"
-                            + (badBoxH > 0 ? "；越界 " + firstBoxH : "") + (badRectH > 0 ? "；" + firstRectH : ""));
-                        Say("      悬停高亮实测：扫描 " + cellsH + " 格（名字常驻 " + labCellsH
-                            + " 格）；四边留边最大偏差 " + worstEvenH + "px、两侧留边最宽 " + worstSlackH
-                            + "px（Px(2)=" + padH + "）");
+                        Check(cellsH > 0 && dirtyH == 0,
+                            "悬停小图标**不画任何标记**（用户 2026-10-23：「不要这种软件周围的东西了」）：扫了 " + cellsH
+                            + " 格，「鼠标在卡片上」和「鼠标在这个图标上」两帧**逐像素完全相同**"
+                            + (dirtyH > 0 ? "；变了 " + dirtyH + " 格，第一处 " + firstDirtyH : ""));
+                        Say("      悬停标记实测：扫描 " + cellsH + " 格，变化的 " + dirtyH + " 格（要求 0）");
                     }
-                    catch (Exception exH) { Check(false, "小图标悬停高亮断言自己抛异常：" + exH.Message); }
+                    catch (Exception exH) { Check(false, "小图标悬停标记断言自己抛异常：" + exH.Message); }
 
                     // ⑤ 名字常驻显示（右键 →「名字常驻显示」）：菜单项要在、开关要落进设置、能往返
                     ContextMenuStrip pm2 = f.BuildTileMenu(gv, nameTarget);
@@ -2051,7 +1957,7 @@ namespace BreadLauncher
                     //   全都建立在「这个分组里至少有一个应用」之上 —— **前提不成立也必须记进跳过汇总**
                     //   （2026-10-01 的教训，见 docs\dev-notes.md 坑 47）：原来这里只 Say 一句「跳过显示名断言」，
                     //   等于把 ①~⑩ 整段**静默**跳过，报告看起来像全跑过了（scroll 那份 = 13 个空组，就是这样）。
-                    string why = "这个分组一个应用都没有 → ①~⑩ 整段没跑（右键菜单结构 / 显示名 / 名字常驻 / 悬停高亮贴图标 / 设置菜单 / 页脚空白带）；要覆盖它得换一份非空分组的配置";
+                    string why = "这个分组一个应用都没有 → ①~⑩ 整段没跑（右键菜单结构 / 显示名 / 名字常驻 / 小图标悬停不画标记 / 设置菜单 / 页脚空白带）；要覆盖它得换一份非空分组的配置";
                     NoteSkip(why);
                     Say("（跳过：" + why + "）");
                 }

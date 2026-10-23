@@ -971,8 +971,8 @@ namespace BreadLauncher
 
         /// <summary>
         /// 小图标「图形真正占的那块」：图标（取不到时的首字母色块）都画在这个矩形里。
-        /// ★悬停高亮也用它 —— **同一件事只许算一处**。2026-10-21 那版把高亮画在整格、图标画在格内，
-        ///   两套几何一漂就成了用户报的「对不齐」（名字常驻的格子底边多出 24px）。
+        /// ★**同一件事只许算一处**：2026-10-21 那版把悬停底色画在整格、图标画在格内，两套几何一漂
+        ///   就成了用户报的「对不齐」（名字常驻的格子底边多出 24px）。现在只剩这一份几何。
         /// </summary>
         private Rectangle IconArtRect(Rectangle cell, Rectangle inner, Bitmap icon, bool withLabel)
         {
@@ -992,43 +992,6 @@ namespace BreadLauncher
             return new Rectangle(cell.X + (cell.Width - icon.Width) / 2,
                                  cell.Y + (cell.Height - icon.Height) / 2,
                                  icon.Width, icon.Height);
-        }
-
-        /// <summary>
-        /// 悬停时贴着图标**看得见的图形**画一圈细线（四边等宽）。
-        /// ★为什么不画一块整格底色（2026-10-21 那版）：
-        ///   ① 图标 PNG 自带透明留边，每个应用不一样（实测可见宽度 39~54px）→ 底色一边宽一边窄；
-        ///   ② 名字常驻的格子图标只占上面 39px，整格底色会甩到名字下面（多 24px）。
-        ///   现在底色整个去掉，只留这圈线：既保住「鼠标在哪一格」的反馈，又不可能歪。
-        /// </summary>
-        private void DrawIconHover(Graphics g, Rectangle cell, Rectangle art, Bitmap icon)
-        {
-            Rectangle r = IconHoverRingRect(cell, art, icon);
-            if (r.Width < 4 || r.Height < 4) return;
-            Theme.DrawRound(g, r, Theme.Px(this, 6), Color.FromArgb(150, 255, 255, 255), 1.5f);
-        }
-
-        /// <summary>悬停那圈线的矩形（纯计算，探针可以直接断言它）。</summary>
-        private Rectangle IconHoverRingRect(Rectangle cell, Rectangle art, Bitmap icon)
-        {
-            Rectangle r = art;
-            if (icon != null)
-            {
-                Rectangle bb = IconService.VisibleBounds(icon);
-                if (bb.Width > 0 && bb.Height > 0 && bb.Width <= icon.Width && bb.Height <= icon.Height)
-                {
-                    double sx = (double)art.Width / icon.Width;
-                    double sy = (double)art.Height / icon.Height;
-                    r = new Rectangle(art.X + (int)Math.Round(bb.X * sx),
-                                      art.Y + (int)Math.Round(bb.Y * sy),
-                                      Math.Max(1, (int)Math.Round(bb.Width * sx)),
-                                      Math.Max(1, (int)Math.Round(bb.Height * sy)));
-                }
-            }
-            int pad = Theme.Px(this, 2);
-            r.Inflate(pad, pad);
-            r.Intersect(cell);
-            return r;
         }
 
         private void DrawGroups(Graphics g)
@@ -1120,14 +1083,12 @@ namespace BreadLauncher
                             withLabel = NameLabelLayout(cell, miniGap, tw, thAll, x, y, out inner, out nameR);
                         Bitmap icon = _icons == null ? null : _icons.Get(cellApp, MiniIconSize);
 
-                        // ★★2026-10-23（v1.26）用户第二次报「悬停的阴影对不齐」。实测根因是**两套几何各算一遍**：
-                        //   高亮画在「整个格子」（MiniBox=63px），图标却画在格子里另一处 —— 名字常驻的格子
-                        //   图标只占上面 39px，于是高亮底边甩到名字下面，多出 24px（本机实测就这 4 个应用最明显）。
-                        //   现在把「图形真正占的那块」算成一份 art，**画和悬停共用**，并且按图标自己的
-                        //   不透明像素边界（IconService.VisibleBounds）收圈 —— 四边留边因此恒等，歪不了。
+                        // ★★2026-10-23（v1.27）用户拍板：**文件夹里的小图标不要任何悬停标记** ——
+                        //   「算了，还是不要这种软件周围的东西了，没有必要，像以前一样就行」。
+                        //   所以这里只剩「图形真正占的那块」这一份几何（`IconArtRect`），画图标用它；
+                        //   悬停时不画底色、也不画圈（以前两版都因为「跟着格子画」而看着对不齐，见 docs\dev-notes 坑 55）。
+                        //   ⚠ 别再往回加：加之前先问他（他把「悬停显示名字」也是关着的）。
                         Rectangle art = IconArtRect(cell, inner, icon, withLabel);
-                        if (_hoverGroup == i && _hoverSlot == s)
-                            DrawIconHover(g, cell, art, icon);
 
                         if (icon == null)
                         {
@@ -2977,7 +2938,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.26\n\n" +
+                    "BreadLauncher 1.27\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
