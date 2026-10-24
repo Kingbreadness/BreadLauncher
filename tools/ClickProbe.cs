@@ -272,7 +272,7 @@ namespace BreadLauncher
                 {
                     if (gv.Apps.Count >= 2)
                     {
-                        MethodInfo reorder = typeof(MainForm).GetMethod("ReorderIcon", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo reorder = typeof(MainForm).GetMethod("ReorderIconAbs", BindingFlags.NonPublic | BindingFlags.Instance);
                         setPageM.Invoke(f, new object[] { gv, 0 });
                         string k0 = gv.Apps[0].Key;
                         string k1 = gv.Apps[1].Key;
@@ -282,7 +282,7 @@ namespace BreadLauncher
                         reorder.Invoke(f, new object[] { groupIndex, 1, 0 });
                         bool restored = gv.Apps[0].Key == k0 && gv.Group.Keys[0] == k0;
                         Check(swapped && restored,
-                            "组内拖图标排序：把第 1 格拖到第 2 格→两个应用交换、组里的 Keys 也跟着交换；拖回去能还原（"
+                            "组内拖图标排序：把第 1 个拖到第 2 个（绝对下标）→交换、组里的 Keys 也跟着换；拖回去能还原（"
                             + (swapped ? "交换 OK" : "交换没生效") + "、" + (restored ? "还原 OK" : "还原不对") + "）");
                     }
                     else NoteSkip("这组不足 2 个应用，测不了「组内拖图标排序」");
@@ -343,6 +343,65 @@ namespace BreadLauncher
                 }
                 catch (Exception exE2E) { Check(false, "组内拖图标端到端断言异常：" + exE2E.Message); }
 
+                // ★★2026-10-23 用户报：**跨页就拖不动**（「一个应用滚轮滚一下才出现，就不能拖动移动顺序」）。
+                //   根因：重排用的是「页内格号」，翻页后同样的格号指向别的应用 → 目标页格子不够时静默不动，
+                //   够的时候会搬错应用。修法：起拖记绝对下标，落点按「当前页 + 格号」换算。
+                //   这条断言走**真实鼠标路径**：按下第 6 格 → 拖起来 → 滚轮翻到第 2 页 → 移到第 1 格 → 松手。
+                try
+                {
+                    List<GroupView> gsX = (List<GroupView>)Field(f, "_groups");
+                    int gx2 = -1;
+                    for (int k2 = 0; k2 < gsX.Count; k2++)
+                        if (gsX[k2].Apps.Count >= 10) { gx2 = k2; break; }
+                    if (gx2 < 0) NoteSkip("没有「超过 9 个应用」的分组，测不了跨页拖图标排序（要 build\\test-settings-10apps.json）");
+                    else
+                    {
+                        GroupView gvX = gsX[gx2];
+                        MethodInfo mmD = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmM = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmU = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo cellR = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo pageOfR = typeof(MainForm).GetMethod("PageOf", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo pageCountR = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Static);
+                        int pcX = (int)pageCountR.Invoke(null, new object[] { gvX });
+                        setPageM.Invoke(f, new object[] { gvX, 0 });
+                        Rectangle r5 = (Rectangle)cellR.Invoke(f, new object[] { gx2, 5 });
+                        Rectangle r0x = (Rectangle)cellR.Invoke(f, new object[] { gx2, 0 });
+                        Point p5 = new Point(r5.X + r5.Width / 2, r5.Y + r5.Height / 2);
+                        Point p5b = new Point(p5.X + Theme.Px(f, 14), p5.Y + Theme.Px(f, 2));   // 先挪一下才算真拖
+                        Point p0x = new Point(r0x.X + r0x.Width / 2, r0x.Y + r0x.Height / 2);
+                        string movedKey = gvX.Apps[5].Key;
+                        string page2First = gvX.Apps[9].Key;
+                        int totalX = gvX.Apps.Count;
+
+                        mmD.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p5.X, p5.Y, 0) });
+                        mmM.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, p5b.X, p5b.Y, 0) });
+                        Wheel(f, -120);                                   // 翻到第 2 页（拖拽中也能翻）
+                        int pageAfterWheel = (int)pageOfR.Invoke(f, new object[] { gvX });
+                        mmM.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, p0x.X, p0x.Y, 0) });
+                        mmU.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p0x.X, p0x.Y, 0) });
+
+                        bool flipped = pageAfterWheel == 1;
+                        bool movedToNextPage = gvX.Apps.Count == totalX && gvX.Apps[9].Key == movedKey
+                                               && gvX.Apps[8].Key == page2First;   // 原来占第 10 个位置的那个，被挤到第 9 个位置
+                        Check(flipped && movedToNextPage,
+                            "跨页拖图标排序：第 1 页第 6 个 → 拖起来 → 滚轮翻到第 2 页 → 放到第 1 格 → "
+                            + "真的插到第 2 页最前面（翻页=" + flipped + "、顺序对=" + movedToNextPage
+                            + "；实测第 10 个是「" + (gvX.Apps.Count > 9 ? gvX.Apps[9].DisplayName : "?") + "」）");
+
+                        // 拖回去（第 2 页第 1 格 → 滚轮回第 1 页 → 放到第 6 格），恢复原样，别影响后面的断言
+                        mmD.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p0x.X, p0x.Y, 0) });
+                        mmM.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, p0x.X + Theme.Px(f, 14), p0x.Y, 0) });
+                        Wheel(f, 120);
+                        mmM.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, p5.X, p5.Y, 0) });
+                        mmU.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p5.X, p5.Y, 0) });
+                        bool backOk = gvX.Apps[5].Key == movedKey;
+                        setPageM.Invoke(f, new object[] { gvX, 0 });
+                        Check(backOk, "跨页拖回去也能还原（第 2 页第 1 个 → 拖回第 1 页第 6 格，实测第 6 个="
+                            + (gvX.Apps.Count > 5 ? gvX.Apps[5].DisplayName : "?") + "）");
+                    }
+                }
+                catch (Exception exX) { Check(false, "跨页拖图标排序断言异常：" + exX.Message); }
                 // ★★2026-10-21 用户报：**文件夹里的空格子会抢掉「拖整个文件夹」**（按在空格子上应该能拖走）
                 try
                 {

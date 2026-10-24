@@ -295,7 +295,10 @@ namespace BreadLauncher
             _cancel = new FlatButton();
             _cancel.Style = FlatButton.Look.IconText;
             _cancel.Glyph = "\uE8BB";
-            _cancel.Text = "完成";
+            // ★2026-10-23 用户报：「叉号显示的怎么是完成，应该是取消吧」—— 这个按钮就是关窗，
+            //   文案跟图标（✕）对齐成「取消」（和 TextPromptForm 那个一致）。
+            //   ⚠ 它**不会撤回**已经点过「添加」加进来的应用（每点一次添加就已经落盘了）。
+            _cancel.Text = "取消";
             _cancel.Click += delegate { DialogResult = DialogResult.Cancel; };
             Controls.Add(_cancel);
 
@@ -593,7 +596,7 @@ namespace BreadLauncher
                         : (_source == SrcDesktop
                             ? ("桌面上有的应用 " + _filtered.Count + " 个（点「来源」可看全部 " + _all.Count + " 个）")
                             : ("全部应用 " + _filtered.Count + " 个（点「全选」可一次勾完）"))));
-            _list.EmptyText = _all.Count == 0 ? "都加进来了 —— 点「完成」关闭" : "没有找到匹配的应用";
+            _list.EmptyText = _all.Count == 0 ? "都加进来了 —— 点「取消」退出去就行" : "没有找到匹配的应用";
             _list.SetEntries(_filtered, false, false);
             RequestIcons();
             Invalidate();
@@ -901,7 +904,7 @@ namespace BreadLauncher
                         Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
                 }
                 // 提示：2026-10-01 从「底栏左边」挪到**列表正下方那条空带**里 ——
-                //   ① 左下角让给了「重新扫描」按钮；② 挪上来能占满整行（原来被「完成」按钮挤到 268px，
+                //   ① 左下角让给了「重新扫描」按钮；② 挪上来能占满整行（原来被「取消」按钮挤到 268px，
                 //   长提示会被省略号吃掉，下面那句「别只给 180px」说的就是这个）。
                 //   高度取「列表底 → 按钮行顶」之间的真实空带，跟着布局走，不写死数字。
                 int bandTop = _list.Bottom;

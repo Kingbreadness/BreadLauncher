@@ -111,8 +111,12 @@ namespace BreadLauncher
         //   按在**卡片本体**上拖仍然是搬分组（老行为不变）。
         private bool _iconDrag;
         private int _iconDragGroup = -1;
-        private int _iconDragFrom = -1;
-        private int _iconDragTo = -1;
+        private int _iconDragFrom = -1;    // 起拖时**那一页**的格号（只用来画「来源压暗」）
+        private int _iconDragTo = -1;      // 当前页的格号（画落点圈）
+        // ★★2026-10-23 用户报「不在同一页就拖不动」：格号是**页内**编号，一翻页就指向别的应用。
+        //   所以起拖时把「整组里的绝对下标」和「起拖页」各记一份，落点也换算成绝对下标再重排。
+        private int _iconDragAbs = -1;
+        private int _iconDragPage = -1;
         private Point _dragStart;
         private int _hoverZone;        // 鼠标当前压在哪条边（0 = 没有）—— 用来高亮那条边
 
@@ -1104,7 +1108,8 @@ namespace BreadLauncher
                                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
                         // ★组内拖图标排序的反馈（2026-10-21）：来源格压暗（目标格在循环外画，支持空格子）
-                        if (_iconDrag && _dragActive && _iconDragGroup == i && s == _iconDragFrom)
+                        if (_iconDrag && _dragActive && _iconDragGroup == i && s == _iconDragFrom
+                            && PageOf(gv) == _iconDragPage)   // 翻页后别把同号的另一个应用压暗
                             Theme.FillRound(g, cell, corner, Color.FromArgb(120, 10, 10, 10));
 
                         // ★鼠标停在这个小图标上 → 在它下面显示应用名（面板里原本只有图标、没有名字）。
@@ -1332,26 +1337,27 @@ namespace BreadLauncher
         }
 
         /// <summary>
-        /// 把第 groupIndex 个文件夹里「本页第 fromSlot 格」的应用移到第 toSlot 格（组内排序）。
-        /// ★2026-10-21 新增（用户要求：面板上直接拖图标就能排序，不用再进「查看全部」）。
-        /// 排完把组里的 Keys 按新顺序重建并落盘（下次打开还是这个顺序）。
+        /// 把第 groupIndex 个文件夹里「**整组**第 fromAbs 个」应用移到「第 toAbs 个」的位置（组内排序）。
+        /// ★★2026-10-23 用户报「不在同一页就拖不动 / 拖了没用」：以前这里用的是**页内格号**（0~8），
+        ///   一翻页格号照样是 0~8，但指向的应用已经换了 —— 于是跨页拖动要么什么都不动
+        ///   （目标页格子数不够 → 直接 return），要么**搬错应用**。现在统一用整组绝对下标，
+        ///   起拖时记下 `_iconDragAbs`，落点按「当前页 + 格号」换算，翻多少页都不会漂。
         /// </summary>
-        private void ReorderIcon(int groupIndex, int fromSlot, int toSlot)
+        private void ReorderIconAbs(int groupIndex, int fromAbs, int toAbs)
         {
             if (groupIndex < 0 || groupIndex >= _groups.Count) return;
             GroupView gv = _groups[groupIndex];
-            int baseIdx = PageOf(gv) * FolderCapacity;
-            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - baseIdx));
-            if (countOnPage <= 0) return;
-            if (fromSlot < 0 || fromSlot >= countOnPage) return;
-            if (toSlot < 0 || toSlot >= FolderCapacity) return;
-            int a = baseIdx + fromSlot;
-            int b = baseIdx + Math.Min(toSlot, countOnPage - 1);   // 落在空格子上 = 移到本页末尾
-            if (a >= gv.Apps.Count || a == b) return;
-            AppEntry moved = gv.Apps[a];
-            gv.Apps.RemoveAt(a);
-            if (b > gv.Apps.Count) b = gv.Apps.Count;
-            gv.Apps.Insert(b, moved);
+            int n = gv.Apps.Count;
+            if (n < 2 || fromAbs < 0 || fromAbs >= n || toAbs < 0) return;
+            // 落在**空格子**上 = 移到「本页末尾」（不是整组末尾）：先把落点夹到本页最后一格
+            int page = PageOf(gv);
+            int pageEnd = Math.Min(n - 1, page * FolderCapacity + FolderCapacity - 1);
+            if (toAbs > pageEnd) toAbs = pageEnd;
+            if (toAbs == fromAbs) return;
+            AppEntry moved = gv.Apps[fromAbs];
+            gv.Apps.RemoveAt(fromAbs);
+            if (toAbs > gv.Apps.Count) toAbs = gv.Apps.Count;
+            gv.Apps.Insert(toAbs, moved);
             if (gv.Group != null)
             {
                 gv.Group.Keys.Clear();
@@ -1360,7 +1366,6 @@ namespace BreadLauncher
             }
             PersistSettings();
         }
-
         /// <summary>数字键 1~9 快启：鼠标停在哪个文件夹上，就取那一页的第 n 个应用（没有就 null）。</summary>
         private AppEntry AppForDigit(int n)
         {
@@ -1429,6 +1434,8 @@ namespace BreadLauncher
                         _iconDragGroup = index;
                         _iconDragFrom = slot;
                         _iconDragTo = slot;
+                        _iconDragPage = PageOf(_groups[index]);
+                        _iconDragAbs = _iconDragPage * FolderCapacity + slot;
                     }
                     else
                     {
@@ -1648,13 +1655,16 @@ namespace BreadLauncher
                 bool iconWasDragging = _dragActive;
                 _iconDrag = false;
                 _dragActive = false;
-                int ig = _iconDragGroup, ifrom = _iconDragFrom, ito = _iconDragTo;
+                int ig = _iconDragGroup, iabs = _iconDragAbs, ito = _iconDragTo;
+                GroupView gvDrop = (ig >= 0 && ig < _groups.Count) ? _groups[ig] : null;
+                int toAbs = (gvDrop != null && ito >= 0) ? PageOf(gvDrop) * FolderCapacity + ito : -1;
                 _iconDragGroup = -1; _iconDragFrom = -1; _iconDragTo = -1;
+                _iconDragAbs = -1; _iconDragPage = -1;
                 if (iconWasDragging)
                 {
                     _downValid = false;
                     Cursor = Cursors.Default;
-                    if (ig >= 0 && ifrom >= 0 && ito >= 0 && ifrom != ito) ReorderIcon(ig, ifrom, ito);
+                    if (ig >= 0 && iabs >= 0 && toAbs >= 0 && iabs != toAbs) ReorderIconAbs(ig, iabs, toAbs);
                     Invalidate();
                     return;
                 }
@@ -1750,9 +1760,11 @@ namespace BreadLauncher
             //   （以前是「让给面板滚，两层都不卡」，他原话：「翻到最后一格再滚就是文件夹外面的在滚了」）。
             //   想滚面板就把鼠标移到空白处。
             int scrollDelta = e.Delta;      // 不在翻页语境时，按本次事件的 Delta 折算
-            if (_hoverGroup >= 0 && _hoverGroup < _groups.Count)
+            // ★2026-10-23：拖图标时按「正在拖的那个文件夹」翻页 —— 这样能「拖一半翻到下一页再放手」。
+            int wheelGroup = (_iconDrag && _dragActive && _iconDragGroup >= 0) ? _iconDragGroup : _hoverGroup;
+            if (wheelGroup >= 0 && wheelGroup < _groups.Count)
             {
-                GroupView hv = _groups[_hoverGroup];
+                GroupView hv = _groups[wheelGroup];
                 if (PageCount(hv) > 1)
                 {
                     // ★翻页要攒满「一格」（Scroll.Notch）才动：高精度滚轮 / 触控板一次手势会送几十个
@@ -2938,7 +2950,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.27\n\n" +
+                    "BreadLauncher 1.28\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
