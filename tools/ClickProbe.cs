@@ -289,6 +289,32 @@ namespace BreadLauncher
                 }
                 catch (Exception exReorder) { Check(false, "组内拖图标排序断言异常：" + exReorder.Message); }
 
+                // ★★2026-10-25 用户实测评测出来的**数据丢失**：组里如果有「现在扫不到」的应用（移动硬盘没插 /
+                //   软件卸了 / 自定义目录离线），拖一下图标排序会把它的 Key **永久删掉**（原来按可见应用 Clear 重建）。
+                //   现在改成锚点做法：扫不到的 Key 原位保留，只换看得见的那些的相对顺序。
+                try
+                {
+                    if (gv.Apps.Count >= 2)
+                    {
+                        MethodInfo reorderK = typeof(MainForm).GetMethod("ReorderIconAbs", BindingFlags.NonPublic | BindingFlags.Instance);
+                        string ghost = "demo.app.ghost-探针";           // 一定解析不出来（不会出现在 gv.Apps 里）
+                        if (gv.Group.Keys.Contains(ghost) == false) gv.Group.Keys.Add(ghost);
+                        int ghostIdx = gv.Group.Keys.IndexOf(ghost);
+                        int keysBefore = gv.Group.Keys.Count;
+                        string kk0 = gv.Apps[0].Key, kk1 = gv.Apps[1].Key;
+                        reorderK.Invoke(f, new object[] { groupIndex, 0, 1 });
+                        bool ghostKept = gv.Group.Keys.Contains(ghost) && gv.Group.Keys.IndexOf(ghost) == ghostIdx;
+                        bool keysSameCount = gv.Group.Keys.Count == keysBefore;
+                        bool orderChanged = gv.Group.Keys.IndexOf(kk1) < gv.Group.Keys.IndexOf(kk0);
+                        reorderK.Invoke(f, new object[] { groupIndex, 1, 0 });     // 还原可见顺序
+                        gv.Group.Keys.Remove(ghost);                              // 清掉探针塞的假 Key
+                        Check(ghostKept && keysSameCount && orderChanged,
+                            "拖图标排序**不会删掉「当前扫不到」的应用**：组里塞一个解析不出来的 Key（共 " + keysBefore
+                            + " 个）→ 拖一次后它还在原位=" + ghostKept + "、Key 总数不变=" + keysSameCount
+                            + "、可见的两个确实换了顺序=" + orderChanged + "（旧写法会把它删掉）");
+                    }
+                }
+                catch (Exception exKeys) { Check(false, "「拖排序不删扫不到的 Key」断言异常：" + exKeys.Message); }
                 // ★拖拽精准度：指在图标中心 = 对应格；指在两个图标之间的缝里 = -2（保持上次目标，不提前跳格）
                 try
                 {

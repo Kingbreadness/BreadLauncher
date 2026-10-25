@@ -1375,9 +1375,31 @@ namespace BreadLauncher
             gv.Apps.Insert(toAbs, moved);
             if (gv.Group != null)
             {
+                // ★★2026-10-25：这里以前是「Keys.Clear() + 按可见应用重建」—— 会把**当前扫不到**的 Key
+                //   （移动硬盘没插 / 软件卸了 / 自定义目录离线）**永久删掉**：用户实测 4 个 Key 的组拖一下剩 3 个。
+                //   现在改成**锚点做法**（和「查看全部」窗口同一套）：只替换「看得见的那些 Key」的相对顺序，
+                //   扫不到的 Key 原位保留。
+                List<string> oldKeys = new List<string>(gv.Group.Keys);
+                List<string> visibleNew = new List<string>();
+                for (int i = 0; i < gv.Apps.Count; i++)
+                {
+                    AppEntry en = gv.Apps[i];
+                    if (en != null && string.IsNullOrEmpty(en.Key) == false) visibleNew.Add(en.Key);
+                }
+                HashSet<string> visibleSet = new HashSet<string>(visibleNew, StringComparer.OrdinalIgnoreCase);
+                List<string> rebuilt = new List<string>(oldKeys.Count);
+                int k = 0;
+                for (int i = 0; i < oldKeys.Count; i++)
+                {
+                    string key = oldKeys[i];
+                    if (visibleSet.Contains(key))
+                    {
+                        if (k < visibleNew.Count) rebuilt.Add(visibleNew[k++]);
+                    }
+                    else rebuilt.Add(key);          // 扫不到的先留着（下次它回来了还能在原位置）
+                }
                 gv.Group.Keys.Clear();
-                foreach (AppEntry en in gv.Apps)
-                    if (en != null && string.IsNullOrEmpty(en.Key) == false) gv.Group.Keys.Add(en.Key);
+                gv.Group.Keys.AddRange(rebuilt);
             }
             PersistSettings();
         }
