@@ -158,7 +158,17 @@ namespace BreadLauncher
             {
                 if (!File.Exists(file)) return fallback;
                 string text = File.ReadAllText(file, Encoding.UTF8);
-                if (string.IsNullOrEmpty(text.Trim())) return fallback;
+                if (string.IsNullOrEmpty(text.Trim()))
+                {
+                    // ★2026-10-25（QA 实测）：0 字节 / 纯空白 = 和「坏 JSON」一样是**数据没了**。
+                    //   以前这里静默 return fallback（不备份、不写日志），随后启动就把默认值写回去、
+                    //   .prev 也被顶掉 —— 用户只看到「分组没了」，日志里一个字都没有，谁也查不出发生过什么。
+                    //   现在按坏文件处理：留 `.bad`（哪怕 0 字节，也是证据）+ 写一条日志。
+                    LastReadError = file + "：文件是空的（0 字节或只有空白），按坏文件处理";
+                    Log(Program.AppDir, "读文件失败 " + LastReadError);
+                    if (BackupBad(file) == false) lock (BlockedLock) BlockedWrites.Add(Norm(file));
+                    return fallback;
+                }
                 JavaScriptSerializer ser = new JavaScriptSerializer();
                 ser.MaxJsonLength = 64 * 1024 * 1024;
                 T obj = ser.Deserialize<T>(text);
@@ -226,6 +236,21 @@ namespace BreadLauncher
         ///      实测两文件 SHA256 逐字节相同，于是 README 教的「关掉面板再把 .prev 改名回来」永远救不回
         ///      分组（关面板那一步本身就把 .prev 覆盖了）；同一根因还会把用户存的 `PanelY` 夹掉。
         /// </summary>
+        /// <summary>删文件，连只读属性一起去掉再删。
+        /// ★2026-10-25：只读文件复制出来的副本**会继承只读属性**（`File.Copy` 走 CopyFile，属性一起复制），
+        ///   直接 `File.Delete` 会抛，于是「清理中间文件」自己也会失败、留下一堆 .prevtmp。
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || File.Exists(path) == false) return;
+                FileAttributes at = File.GetAttributes(path);
+                if ((at & FileAttributes.ReadOnly) != 0) File.SetAttributes(path, at & ~FileAttributes.ReadOnly);
+                File.Delete(path);
+            }
+            catch (Exception) { }
+        }
+
         public static SaveResult Write(string file, object o)
         {
             bool blocked;
@@ -237,6 +262,7 @@ namespace BreadLauncher
             }
 
             string tmp = null;
+            string prevPending = null;      // 回退分支里那份「上一版」的中间文件（成功才转正成 .prev）
             bool keepTmp = false;
             try
             {
@@ -289,11 +315,23 @@ namespace BreadLauncher
                     {
                         // 个别文件系统（FAT32 / 网络盘）不支持 Replace：退回「删 + 改名」。
                         // 注意顺序风险：原文件删掉之后，tmp 就是唯一一份数据 —— 改名再失败也绝不能把它清掉。
-                        // 删之前先留一份 .prev，万一这次落盘把分组搞没了还能捞回来。
-                        try { if (File.Exists(file)) File.Copy(file, file + ".prev", true); }
+                        // ★★2026-10-25（QA 实测的丢备份场景）：以前这里是**先**把当前文件复制成 `.prev`，再删/改名 ——
+                        //   文件只读时「删不掉 + 改名失败」，可 `.prev` 里那份**更早的**后悔药已经被"当前版本"顶掉了。
+                        //   现在：先复制成 `xxx.prevtmp`，**只有整次落盘真的成功了**才把它转正成 `.prev`；
+                        //   任何一步失败都把它清掉、`.prev` 一个字节都不动。
+                        prevPending = file + "." + seq.ToString() + ".prevtmp";
+                        try { if (File.Exists(file)) File.Copy(file, prevPending, true); }
                         catch (Exception) { }
-                        try { File.Delete(file); }
-                        catch (Exception) { }
+                        try
+                        {
+                            File.Delete(file);          // 只读文件在这一步就会抛 → 直接失败，别去动 .prev
+                        }
+                        catch (Exception)
+                        {
+                            TryDeleteFile(prevPending);
+                            keepTmp = true;              // tmp 里是最新配置，留着能手工救
+                            throw;
+                        }
                         try
                         {
                             File.Move(tmp, file);
@@ -301,9 +339,17 @@ namespace BreadLauncher
                         }
                         catch (Exception)
                         {
-                            keepTmp = true;
+                            keepTmp = true;              // 原文件已删掉 —— 此刻 tmp 是唯一一份数据
                             throw;
                         }
+                        // 整次落盘成功了，才把「上一版」转正成后悔药
+                        try
+                        {
+                            string prevOk = file + ".prev";
+                            TryDeleteFile(prevOk);
+                            File.Move(prevPending, prevOk);
+                        }
+                        catch (Exception) { }
                     }
                     // 上一版不删掉，留成 settings.json.prev：分组被误删/误清空时还能拿回来。
                     // ★但「原来那份读不出来」时**不轮转**：那种情况下无法判断新内容和原来是不是一样，
@@ -350,6 +396,8 @@ namespace BreadLauncher
             }
             finally
             {
+                // 回退分支留下的 .prevtmp 一律清掉（成功那次已经被 Move 转正，这里就不存在了）
+                TryDeleteFile(prevPending);
                 if (tmp != null)
                 {
                     if (keepTmp)
