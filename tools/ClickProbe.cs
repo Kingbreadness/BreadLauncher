@@ -402,6 +402,7 @@ namespace BreadLauncher
                     }
                 }
                 catch (Exception exX) { Check(false, "跨页拖图标排序断言异常：" + exX.Message); }
+
                 // ★★2026-10-21 用户报：**文件夹里的空格子会抢掉「拖整个文件夹」**（按在空格子上应该能拖走）
                 try
                 {
@@ -1248,7 +1249,6 @@ namespace BreadLauncher
                 NoteSkip("候选真的不足 3 个（这份配置里能加的应用太少）");
                 Say("（候选不足 3 个，跳过「连加多个」检查）");
             }
-
 
             // ---------- 2) 滚轮方向 ----------
             int maxScroll = (int)Prop(f, "MaxScroll");
@@ -2737,6 +2737,84 @@ namespace BreadLauncher
                     "（例外）面板右边缘仍是**缩放指针**（实测 " + f.Cursor.Size + "）—— 边上要能看出可以拉窗口");
             }
             catch (Exception exCur) { Check(false, "鼠标指针断言异常：" + Why(exCur)); }
+
+                // ---------- 2026-10-25 三个「用户视角试用」挖出来的 bug，各钉一条 ----------
+                // ① 拖到最小尺寸时，底栏三个按钮不许重叠（以前 360×220 会让「新建分组」和「关闭」叠 102px，而且尺寸会落盘）
+                try
+                {
+                    Size oldSize = f.Size;
+                    int minW = Theme.Px(f, 428), minH = Theme.Px(f, 236);
+                    f.Size = new Size(minW, minH);
+                    Application.DoEvents();
+                    Control bs = (Control)Field(f, "_settingsBtn");
+                    Control bn = (Control)Field(f, "_newGroupBtn");
+                    Control bc = (Control)Field(f, "_closeBtn");
+                    bool overlap = bs.Bounds.IntersectsWith(bn.Bounds) || bn.Bounds.IntersectsWith(bc.Bounds)
+                                   || bs.Bounds.IntersectsWith(bc.Bounds);
+                    bool inside = bc.Right <= f.ClientSize.Width && bs.Left >= 0;
+                    Check(overlap == false && inside,
+                        "拖到最小尺寸（" + f.Width + "×" + f.Height + "）时底栏按钮不重叠、也不出界：设置 "
+                        + bs.Bounds + " / 新建分组 " + bn.Bounds + " / 关闭 " + bc.Bounds);
+                    f.Size = oldSize;
+                    Application.DoEvents();
+                }
+                catch (Exception exMin) { Check(false, "最小尺寸断言异常：" + exMin.Message); }
+
+                // ② 位置存过没有：负坐标（左侧 / 上方副屏）也要算「存过」（以前拿 >=0 当哨兵，负坐标永远恢复不了）
+                try
+                {
+                    MethodInfo hasPos = typeof(MainForm).GetMethod("HasStoredPos", BindingFlags.NonPublic | BindingFlags.Static);
+                    Settings sNegPos = new Settings();
+                    sNegPos.PanelPosSet = true;                        // 存过（新版本每次保存都会置这个标记）
+                    sNegPos.PanelX = -500; sNegPos.PanelY = 100;      // 左副屏：负坐标
+                    Settings sFresh2 = new Settings();                 // 从没存过（默认 -1/-1）
+                    bool negOk = (bool)hasPos.Invoke(null, new object[] { sNegPos });
+                    bool freshOk = (bool)hasPos.Invoke(null, new object[] { sFresh2 });
+                    Check(negOk && freshOk == false,
+                        "位置记忆认「负坐标」：存过 + PanelX=-500（左副屏）算存过=" + negOk + "；从没存过算存过=" + freshOk + "（要求 True / False）");
+                }
+                catch (Exception exPos) { Check(false, "负坐标位置记忆断言异常：" + exPos.Message); }
+
+                // ③ 拖分组 + 滚轮：落点必须按**松手那一刻**重算（以前滚完还按旧落点，搬到错位置）
+                try
+                {
+                    List<GroupView> gsD = (List<GroupView>)Field(f, "_groups");
+                    int maxD = (int)Prop(f, "MaxScroll");
+                    int colsD = (int)Prop(f, "Columns");
+                    int twD = (int)Prop(f, "TileW"), thD = (int)Prop(f, "TileH");
+                    int gxD = (int)Prop(f, "GapX"), gyD = (int)Prop(f, "GapY");
+                    if (maxD <= 0 || gsD.Count < colsD + 2)
+                        NoteSkip("这份配置不需要滚动（或组太少），测不了「拖分组 + 滚轮后落点重算」");
+                    else
+                    {
+                        SetScroll(f, 0);
+                        int leftD = (int)Field(f, "_groupLeft"), topD = (int)Field(f, "_groupTop");
+                        Point pd = new Point(leftD + Theme.Px(f, 4), topD + Theme.Px(f, 4));               // 第 1 张卡片的留白处
+                        Point p1d = new Point(leftD + (twD + gxD) + twD / 2, topD + thD / 2);               // 第 2 张卡片中心
+                        MethodInfo mmDn = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmMv = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mmUp2 = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        string movedName = gsD[0].Name;
+                        string underName = gsD[1 + colsD].Name;
+                        mmDn.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pd.X, pd.Y, 0) });
+                        mmMv.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, p1d.X, p1d.Y, 0) });
+                        int scrollBefore = (int)Field(f, "_scrollY");
+                        Wheel(f, -120);                                          // 滚一整行：指针下面换成别的组了
+                        int scrollAfter = (int)Field(f, "_scrollY");
+                        mmUp2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p1d.X, p1d.Y, 0) });
+                        Settings stD = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                        int landed = -1;
+                        for (int k = 0; k < stD.Groups.Count; k++) if (stD.Groups[k].Name == movedName) { landed = k; break; }
+                        int expect = Math.Min(1 + colsD, stD.Groups.Count - 1);
+                        Check(scrollAfter > scrollBefore && landed == expect,
+                            "拖分组时滚了一行 → 松手按「鼠标下面那张卡片」落（滚前 " + scrollBefore + " → 滚后 " + scrollAfter
+                            + "；「" + movedName + "」落在第 " + (landed + 1) + " 位，期望第 " + (expect + 1)
+                            + " 位 = 滚完指针下的「" + underName + "」那一格）；旧写法会落回第 1 位");
+                        SetScroll(f, 0);
+                        Application.DoEvents();
+                    }
+                }
+                catch (Exception exDrag) { Check(false, "拖分组 + 滚轮落点断言异常：" + exDrag.Message); }
 
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();

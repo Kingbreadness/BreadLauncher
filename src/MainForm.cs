@@ -300,8 +300,11 @@ namespace BreadLauncher
             int dy = p.Y - _panelGrabPos.Y;
             Rectangle b = _panelGrabBounds;
             Rectangle wa = _dragWorkArea.Width > 0 ? _dragWorkArea : CurrentWorkArea();
-            int minW = Theme.Px(this, 360);
-            int minH = Theme.Px(this, 220);
+            // ★2026-10-25：以前是 360×220（逻辑像素），但那比底栏三个按钮加起来还窄 ——
+            //   实测 150% 下拖到最小，「新建分组」和「关闭」重叠 102px、组名被横切成半截，而且尺寸会落盘（拖小一次永久这样）。
+            //   现在从内容反推：宽 = 底栏 110+152+110 + 两侧留白；高 = 顶 18 + 一格 158 + 底 10 + 底栏 38 + 12。
+            int minW = Theme.Px(this, 428);
+            int minH = Theme.Px(this, 236);
             int maxW = Math.Max(minW, wa.Width - Theme.Px(this, 8));    // 最大不超过屏幕可用区域
             int maxH = Math.Max(minH, wa.Height - Theme.Px(this, 8));
             int left = b.Left, top = b.Top, right = b.Right, bottom = b.Bottom;
@@ -338,9 +341,18 @@ namespace BreadLauncher
         }
 
         /// <summary>把当前的位置/大小存进配置（下次打开就用这个，位置和大小都记得住）。</summary>
+        /// <summary>配置里到底存过位置没有（显式标记优先；老配置没有这个标记 → 退回"坐标 ≥ 0"的老判断）。</summary>
+        private static bool HasStoredPos(Settings s)
+        {
+            if (s == null) return false;
+            if (s.PanelPosSet) return true;
+            return s.PanelX >= 0 && s.PanelY >= 0;
+        }
+
         private void SavePanelBounds(bool vertical)
         {
             if (_settings == null) return;
+            _settings.PanelPosSet = true;      // 存过位置了（负坐标也算：左侧 / 上方副屏）
             _settings.PanelX = Left;
             _settings.PanelY = Top;
             _settings.PanelW = Width;
@@ -431,13 +443,16 @@ namespace BreadLauncher
                 if (_settings.PanelW > 0 && _settings.PanelH > 0)
                 {
                     Size fixedSize = ScaleStoredBounds(_settings.PanelW, _settings.PanelH, _settings.PanelDpi, nowDpi);
+                    // 存档可能比现在的最小尺寸还小（老版本拖小过）→ 兜一下，否则一打开就是「按钮重叠」
+                    if (fixedSize.Width < Theme.Px(this, 428)) fixedSize.Width = Theme.Px(this, 428);
+                    if (fixedSize.Height < Theme.Px(this, 236)) fixedSize.Height = Theme.Px(this, 236);
                     Size = fixedSize;
                     // 就地改成"当前 DPI 下的物理像素"：后面的布局 / 保存都按它算，配置下一次落盘就自愈了
                     _settings.PanelW = fixedSize.Width;
                     _settings.PanelH = fixedSize.Height;
                     _settings.PanelDpi = nowDpi;
                 }
-                if (_settings.PanelX >= 0 && _settings.PanelY >= 0)
+                if (HasStoredPos(_settings))
                 {
                     // 尺寸换算完可能比屏幕还大（老配置在大屏上存的），所以位置要**夹进工作区**再设，
                     // 不然面板会有一截挂在屏幕外、而且用户拖不回来（拖动有最小/最大限制，但开局就超界会很难受）。
@@ -600,7 +615,7 @@ namespace BreadLauncher
 
             // 用户自己挪过 / 拉过：按存下来的位置和大小放，但仍然夹在当前屏幕的可视范围里，
             // 免得换显示器或改分辨率之后面板跑到看不见的地方。
-            if (_settings != null && _settings.PanelX >= 0 && _settings.PanelY >= 0)
+            if (HasStoredPos(_settings))
             {
                 if (w > wa.Width - Theme.Px(this, 8)) w = wa.Width - Theme.Px(this, 8);
                 if (h > wa.Height - Theme.Px(this, 8)) h = wa.Height - Theme.Px(this, 8);
@@ -1674,7 +1689,12 @@ namespace BreadLauncher
             if (_dragActive)
             {
                 int from = _dragFrom;
-                int to = _dragTo;
+                // ★2026-10-25：落点按**松手这一刻**的位置重算 —— 拖动中滚轮滚了一行的话，旧的 _dragTo
+                //   已经滚到别的组上（用户实测「搬完发现位置不对」，而且落点高亮早滚出屏幕了）。
+                int tiNow, tsNow;
+                GroupHitTest(e.Location, out tiNow, out tsNow);
+                int to = tiNow >= 0 ? tiNow : SlotIndexAt(e.Location);
+                if (to < 0) to = _dragTo;
                 _dragActive = false;
                 _downValid = false;            // ★同上
                 _dragFrom = -1;
@@ -2380,7 +2400,8 @@ namespace BreadLauncher
             try
             {
                 r = MessageBox.Show(this,
-                    "删除分组「" + gv.Name + "」？\n\n组里的 " + gv.Apps.Count + " 个应用会回到「未分组」，不会卸载任何东西。",
+                    "删除分组「" + gv.Name + "」？\n\n组里的 " + gv.Apps.Count + " 个应用会从面板上消失 —— 它们不会被卸载，" +
+                        "\n之后还能在「添加应用」的候选里重新加回来（只是不会再自己回到面板上）。",
                     "BreadLauncher", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
             }
             finally { _modalOpen = false; }
@@ -2468,7 +2489,8 @@ namespace BreadLauncher
             {
                 // 桌面上有的排前面：用户更可能在找自己桌面上的那些
                 if (a.OnDesktop != b.OnDesktop) return a.OnDesktop ? -1 : 1;
-                return string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
+                // 按**显示名**排：用户在面板上看到的是 DisplayName，按 Name 排会显得乱七八糟（2026-10-25）
+                return string.Compare(a.DisplayName ?? a.Name, b.DisplayName ?? b.Name, StringComparison.CurrentCultureIgnoreCase);
             });
             return r;
         }
@@ -2950,7 +2972,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.28\n\n" +
+                    "BreadLauncher 1.29\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

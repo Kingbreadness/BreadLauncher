@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace BreadLauncher
@@ -167,6 +168,17 @@ namespace BreadLauncher
         private FlatButton _ok;
         private FlatButton _cancel;
         private System.Windows.Forms.Timer _timer;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+
+        /// <summary>给输入框加「提示文字」（系统自带 cue banner，字画在框里面，不会被不透明的 TextBox 盖掉）。</summary>
+        private static void SetHintText(TextBox box, string hint)
+        {
+            if (box == null) return;
+            try { SendMessage(box.Handle, 0x1501 /* EM_SETCUEBANNER */, (IntPtr)1, hint); }
+            catch (Exception) { }
+        }
         private DateTime _shownAt = DateTime.Now;
         private readonly HashSet<string> _requested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private Rectangle _filterRect;
@@ -254,6 +266,10 @@ namespace BreadLauncher
             _filter.Font = Theme.Ui(10.5f);
             _filter.TextChanged += delegate { RestartTimer(); };
             Controls.Add(_filter);
+            // ★2026-10-24 用户报「筛选框里一个字都没有」：以前那行「输入名字筛选…」是画在窗体上的（OnPaint），
+            //   可真 TextBox 不透明、正好压在同一个矩形里 → 那行字永远被盖住，框看着像坏了。
+            //   现在改用系统自带的提示文字（EM_SETCUEBANNER），字画在输入框**里面**，不可能被盖。
+            SetHintText(_filter, "输入名字筛选…");
 
             _list = new AllAppsList();
             _list.Icons = icons;
@@ -561,7 +577,12 @@ namespace BreadLauncher
                 if (en == null) continue;
                 if (_source == SrcDesktop && en.OnDesktop == false) continue;   // 「来源 = 桌面」
                 if (_source == SrcCustom && en.FromCustom == false) continue;   // 「来源 = 自定义文件夹」
-                if (q.Length == 0 || en.Name.IndexOf(q, StringComparison.CurrentCultureIgnoreCase) >= 0)
+                // ★2026-10-25：改名之后要能用**新名字**搜到（用户/整理控报：改成「素材盘-项目A」后按新名搜不到）。
+                //   行上画的是 DisplayName，匹配却只比 Name —— 两处口径不一致。现在两个都认。
+                string dispF = en.DisplayName;
+                bool hitName = en.Name != null && en.Name.IndexOf(q, StringComparison.CurrentCultureIgnoreCase) >= 0;
+                bool hitDisp = dispF != null && dispF.IndexOf(q, StringComparison.CurrentCultureIgnoreCase) >= 0;
+                if (q.Length == 0 || hitName || hitDisp)
                     _filtered.Add(en);
             }
             UpdateSourceButton();
@@ -897,12 +918,8 @@ namespace BreadLauncher
                 // 提示文字比较长、位置又窄，这里单独用 9pt 且允许省略，别挤到按钮上
                 Theme.FillRound(g, _filterRect, Theme.Px(this, 8), Theme.Surface);
                 Theme.DrawRound(g, _filterRect, Theme.Px(this, 8), _filter.Focused ? Theme.Accent : Theme.Border, 1f);
-                if (string.IsNullOrEmpty(_filter.Text))
-                {
-                    Theme.DrawText(g, "输入名字筛选…", Theme.Ui(10f),
-                        new Rectangle(_filterRect.X + Theme.Px(this, 12), _filterRect.Y, _filterRect.Width - Theme.Px(this, 24), _filterRect.Height),
-                        Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-                }
+                // （提示文字不在这里画：见构造函数里 SetHintText —— 画在这儿会被不透明的 TextBox 盖住）
+
                 // 提示：2026-10-01 从「底栏左边」挪到**列表正下方那条空带**里 ——
                 //   ① 左下角让给了「重新扫描」按钮；② 挪上来能占满整行（原来被「取消」按钮挤到 268px，
                 //   长提示会被省略号吃掉，下面那句「别只给 180px」说的就是这个）。

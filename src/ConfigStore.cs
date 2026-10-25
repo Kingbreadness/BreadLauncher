@@ -28,6 +28,9 @@ namespace BreadLauncher
         /// <summary>面板位置（左上角，屏幕坐标）。负值 = 还没定过，按「贴鼠标所在屏的任务栏上方居中」自动放。</summary>
         public int PanelX = -1;
         public int PanelY = -1;
+        /// <summary>位置到底存过没有。★2026-10-25：以前拿 `PanelX/PanelY >= 0` 当哨兵，
+        /// 但屏幕坐标本来就可以是负的（左侧 / 上方副屏）→ 那些用户的位置永远恢复不了。现在用一个显式标记。</summary>
+        public bool PanelPosSet = false;
         /// <summary>面板宽度（物理像素，在本字段记的 `PanelDpi` 那个 DPI 下量的）；0 或负 = 用默认 640。</summary>
         public int PanelW = 0;
         /// <summary>面板高度（同上）；0 = 自动（按分组数量收紧到刚好放得下）。用户手动拉过高就固定住。</summary>
