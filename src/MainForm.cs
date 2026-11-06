@@ -294,6 +294,16 @@ namespace BreadLauncher
             return Screen.PrimaryScreen.WorkingArea;
         }
 
+        /// <summary>面板最小宽度：底栏三个按钮（110+152+110）+ 两侧留白，再留一点缝。</summary>
+        private int MinPanelW() { return Theme.Px(this, 428); }
+
+        /// <summary>面板最小高度：顶 18 + **一格 TileH（跟着 DPI 与「文件夹大小」变）** + 间隙 10 + 底栏 38 + 12。
+        /// ★别写死数字：以前写「一格 158」只对 FolderScale=100 成立，选「大」(120%) 时组名带会被整条切掉。</summary>
+        private int MinPanelH()
+        {
+            return Theme.Px(this, 18) + TileH + Theme.Px(this, 10) + Theme.Px(this, 38) + Theme.Px(this, 12);
+        }
+
         private void DoResize(Point p)
         {
             int dx = p.X - _panelGrabPos.X;
@@ -302,9 +312,9 @@ namespace BreadLauncher
             Rectangle wa = _dragWorkArea.Width > 0 ? _dragWorkArea : CurrentWorkArea();
             // ★2026-10-25：以前是 360×220（逻辑像素），但那比底栏三个按钮加起来还窄 ——
             //   实测 150% 下拖到最小，「新建分组」和「关闭」重叠 102px、组名被横切成半截，而且尺寸会落盘（拖小一次永久这样）。
-            //   现在从内容反推：宽 = 底栏 110+152+110 + 两侧留白；高 = 顶 18 + 一格 158 + 底 10 + 底栏 38 + 12。
-            int minW = Theme.Px(this, 428);
-            int minH = Theme.Px(this, 236);
+            //   现在从内容反推（见 MinPanelW / MinPanelH）。
+            int minW = MinPanelW();
+            int minH = MinPanelH();
             int maxW = Math.Max(minW, wa.Width - Theme.Px(this, 8));    // 最大不超过屏幕可用区域
             int maxH = Math.Max(minH, wa.Height - Theme.Px(this, 8));
             int left = b.Left, top = b.Top, right = b.Right, bottom = b.Bottom;
@@ -444,8 +454,8 @@ namespace BreadLauncher
                 {
                     Size fixedSize = ScaleStoredBounds(_settings.PanelW, _settings.PanelH, _settings.PanelDpi, nowDpi);
                     // 存档可能比现在的最小尺寸还小（老版本拖小过）→ 兜一下，否则一打开就是「按钮重叠」
-                    if (fixedSize.Width < Theme.Px(this, 428)) fixedSize.Width = Theme.Px(this, 428);
-                    if (fixedSize.Height < Theme.Px(this, 236)) fixedSize.Height = Theme.Px(this, 236);
+                    if (fixedSize.Width < MinPanelW()) fixedSize.Width = MinPanelW();
+                    if (fixedSize.Height < MinPanelH()) fixedSize.Height = MinPanelH();
                     Size = fixedSize;
                     // 就地改成"当前 DPI 下的物理像素"：后面的布局 / 保存都按它算，配置下一次落盘就自愈了
                     _settings.PanelW = fixedSize.Width;
@@ -560,9 +570,14 @@ namespace BreadLauncher
         {
             base.OnLoad(e);
 
-            Size = new Size(
-                (_settings != null && _settings.PanelW > 0) ? _settings.PanelW : Theme.Px(this, 640),
-                (_settings != null && _settings.PanelH > 0) ? _settings.PanelH : Theme.Px(this, 400));
+            // ★★2026-11-06：这里**必须**也兜一次最小尺寸 —— 构造函数里兜过了，但 OnLoad 又把存档尺寸原样套了回来，
+            //   于是「存档比最小尺寸还小」的配置（老版本拖小过 / 文件夹大小换成「大」但高度没重存）
+            //   一打开就是底栏重叠、组名带被切。实测：FolderScale=120 + PanelH=360 时「常用」两个字整条不见。
+            int wantW = (_settings != null && _settings.PanelW > 0) ? _settings.PanelW : Theme.Px(this, 640);
+            int wantH = (_settings != null && _settings.PanelH > 0) ? _settings.PanelH : Theme.Px(this, 400);
+            if (wantW < MinPanelW()) wantW = MinPanelW();
+            if (wantH < MinPanelH()) wantH = MinPanelH();
+            Size = new Size(wantW, wantH);
             Theme.ApplyRoundedCorners(this);
             // ★2026-10-21：菜单里的「亚克力」开关已按用户要求删掉 → **永远开着**。
             //   老配置里存的 `Acrylic=false` 也强制改回 true（否则他自己都没办法再打开了）。
@@ -2994,7 +3009,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.30\n\n" +
+                    "BreadLauncher 1.31\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
