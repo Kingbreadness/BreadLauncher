@@ -100,6 +100,8 @@ namespace BreadLauncher
         private int _wheelAcc;         // 文件夹翻页用的滚轮累计（碎 Delta 要攒满一格 120 才翻页）
         private int _hoverGroup = -1;
         private int _hoverSlot = -2; // -2 = 不在格子上；-1 = 格子主体；0..8 = 3x3 里的小图标
+        // ★2026-11-06：右键「以管理员身份运行」只对**这一次**生效 —— 按下时记下 Key，LaunchEntry 用完就清。
+        private string _adminOnceKey;
 
         // 拖动分组（调位置）：按下记来源，移动超过阈值才算拖动，松手落到目标下标
         private int _dragFrom = -1;
@@ -2613,8 +2615,37 @@ namespace BreadLauncher
         {
             if (en == null) return;
             _suppressDeactivate = true;
+
+            // ★2026-11-06：这一次要不要提权 = 「这一次」标记 或 「总是以管理员运行」。
+            bool onceAdmin = _adminOnceKey != null && string.Equals(_adminOnceKey, en.Key, StringComparison.OrdinalIgnoreCase);
+            _adminOnceKey = null;
+            bool asAdmin = onceAdmin || IsAlwaysAdmin(en);
+
             string err;
-            if (Launcher.Launch(en, out err))
+            LaunchResult r = Launcher.Launch(en, asAdmin, out err);
+
+            // 商店应用 / 协议链接提不了权：回退普通启动，并且**明确告诉用户**（是他主动要提权的，静默降级会让人以为坏了）
+            if (r == LaunchResult.ElevationUnsupported)
+            {
+                string why = err;
+                r = Launcher.Launch(en, false, out err);
+                if (r == LaunchResult.Ok)
+                {
+                    _suppressDeactivate = false;
+                    _modalOpen = true;
+                    try
+                    {
+                        MessageBox.Show(this, "这个应用没法以管理员身份运行：\n" + en.DisplayName + "\n\n" + why
+                            + "\n\n（已经按普通方式启动了）", "BreadLauncher",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    finally { _modalOpen = false; }
+                    if (ShouldCloseAfterLaunch()) Close();
+                    return;
+                }
+            }
+
+            if (r == LaunchResult.Ok)
             {
                 // ★启动成功：默认**留在面板上**，方便连着启动下一个；想恢复「启动就关」在设置里打开。
                 if (ShouldCloseAfterLaunch())
@@ -2625,6 +2656,14 @@ namespace BreadLauncher
                 _suppressDeactivate = false;
                 return;
             }
+
+            // 用户自己在 UAC 上点了「否」：不是错误 —— 不弹窗、不关面板，当没发生。
+            if (r == LaunchResult.Cancelled)
+            {
+                _suppressDeactivate = false;
+                return;
+            }
+
             _suppressDeactivate = false;
             _modalOpen = true;
             try
@@ -2633,6 +2672,47 @@ namespace BreadLauncher
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally { _modalOpen = false; }
+        }
+
+        /// <summary>右键「以管理员身份运行」：只对这一次生效，不改配置。</summary>
+        private void LaunchEntryAsAdminOnce(AppEntry en)
+        {
+            if (en == null) return;
+            if (Launcher.CanElevate(en) == false)
+            {
+                _modalOpen = true;
+                try
+                {
+                    MessageBox.Show(this, "这个应用没法以管理员身份运行：\n" + en.DisplayName
+                        + "\n\n它没有独立的 exe（商店应用 / 协议链接），Windows 不给这种条目提权。",
+                        "BreadLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                finally { _modalOpen = false; }
+                return;
+            }
+            _adminOnceKey = en.Key;
+            LaunchEntry(en);
+        }
+
+        /// <summary>这个应用是不是「总是以管理员运行」。</summary>
+        internal bool IsAlwaysAdmin(AppEntry en)
+        {
+            if (en == null || _settings == null || _settings.AdminKeys == null) return false;
+            for (int i = 0; i < _settings.AdminKeys.Count; i++)
+                if (string.Equals(_settings.AdminKeys[i], en.Key, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>开/关「总是以管理员运行」（不弹窗的主要逻辑，自检直接断言它）。</summary>
+        internal void SetAlwaysAdmin(AppEntry en, bool on)
+        {
+            if (en == null || _settings == null) return;
+            if (_settings.AdminKeys == null) _settings.AdminKeys = new List<string>();
+            for (int i = _settings.AdminKeys.Count - 1; i >= 0; i--)
+                if (string.Equals(_settings.AdminKeys[i], en.Key, StringComparison.OrdinalIgnoreCase))
+                    _settings.AdminKeys.RemoveAt(i);
+            if (on && string.IsNullOrEmpty(en.Key) == false) _settings.AdminKeys.Add(en.Key);
+            PersistSettings();
         }
 
         /// <summary>自检用：和右键弹出的**同源**菜单副本（不用真的弹窗）。en = null 表示点的是文件夹背景。</summary>
@@ -2734,6 +2814,19 @@ namespace BreadLauncher
                 labelItem.Checked = entry.ShowName;
                 labelItem.Click += delegate { SetNameLabel(entry, !entry.ShowName); };
                 menu.Items.Add(labelItem);
+
+                // ★2026-11-06：按应用提权（用户场景：某个软件平时能开，但要管理员才解锁全部功能）。
+                //   ①「以管理员身份运行」= 只这一次；②「总是…」= 记住，之后**左键点它**也会弹 UAC。
+                //   商店应用 / 协议链接没有独立 exe，提不了权 —— 菜单里留着，点了会说明原因。
+                ToolStripMenuItem adminOnce = new ToolStripMenuItem("以管理员身份运行");
+                adminOnce.Click += delegate { LaunchEntryAsAdminOnce(entry); };
+                menu.Items.Add(adminOnce);
+                bool alwaysAdmin = IsAlwaysAdmin(entry);
+                ToolStripMenuItem adminAlways = new ToolStripMenuItem(
+                    "总是以管理员运行：" + (alwaysAdmin ? "已开启" : "已关闭"));
+                adminAlways.Checked = alwaysAdmin;
+                adminAlways.Click += delegate { SetAlwaysAdmin(entry, !IsAlwaysAdmin(entry)); };
+                menu.Items.Add(adminAlways);
 
                 menu.Items.Add("重命名…", null, delegate { RenameEntry(entry); });
                 if (string.IsNullOrEmpty(entry.CustomName) == false)
@@ -3009,7 +3102,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.31\n\n" +
+                    "BreadLauncher 1.32\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

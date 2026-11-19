@@ -659,6 +659,10 @@ namespace BreadLauncher
                             //   settings.json：大部分应用已经在组里 → 候选只剩几个）时，这条前提不成立，
                             //   后面那些滚动断言的失败都是假失败。
                             bool listScrolls = lst.ContentHeight > lst.Height;
+                            // ★2026-11-06：光"比可视区高"不够 —— 只高 28px 时滚到顶就是 28，
+                            //   后面那两条按"整格 3 行"比数字的断言会假红（用户配置候选变少时就这样）。
+                            int listMaxOff = Math.Max(0, lst.ContentHeight - lst.Height);
+                            bool listScrolls3 = listScrolls && listMaxOff >= Theme.Px(lst, Theme.Scroll.ListRow) * 3;
                             // 走**真实点击路径**：直接调 AllAppsList.OnMouseUp（左键）点到前三行上，
                             // 这样 CheckedChanged → UpdateChecks/UpdateTitle 全都会真的跑一遍
                             MethodInfo mu = typeof(AllAppsList).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -830,16 +834,20 @@ namespace BreadLauncher
                                 int rowPitch = Theme.Px(lst, Theme.Scroll.ListRow);
                                 WheelList(lst, -120);
                                 int offOne = (int)offF2.GetValue(lst);
-                                CheckIf(listScrolls, "列表没超出可视区（候选太少），滚轮自然不动",
-                                    offOne == rowPitch * 3,
+                                // ★2026-11-06：期望值要跟「列表实际能滚多远」取小 —— 列表只比可视区高一点时，
+                                //   滚轮会被夹到最大值（实测用户配置只多 28px），这不是回归，是前提不同。
+                                int expectOne = Math.Min(rowPitch * 3, Math.Max(0, lst.ContentHeight - lst.Height));
+                                CheckIf(listScrolls, "列表没超出可视区（候选太少），本来就滚不动",
+                                    offOne == expectOne,
                                     "列表滚轮一格 = 3 行（行距 " + rowPitch + "）→ _offset = " + offOne
-                                    + "（期望 " + (rowPitch * 3) + "；以前是直接拿 Delta 当像素用的 120）");
+                                    + "（期望 " + expectOne + "；以前是直接拿 Delta 当像素用的 120）");
                                 WheelList(lst, -40);
                                 int offFine = (int)offF2.GetValue(lst);
-                                CheckIf(listScrolls, "列表没超出可视区（候选太少），滚轮自然不动",
-                                    offFine - offOne == rowPitch,
+                                int expectFine = Math.Min(rowPitch, Math.Max(0, lst.ContentHeight - lst.Height) - offOne);
+                                CheckIf(listScrolls, "列表没超出可视区（候选太少），本来就滚不动",
+                                    offFine - offOne == expectFine,
                                     "碎 Delta（高精度滚轮/触控板送 40）按比例缩 → 正好一行 " + (offFine - offOne)
-                                    + "px（以前只滚 40px，几乎看不出动）");
+                                    + "px（期望 " + expectFine + "；以前只滚 40px，几乎看不出动）");
                                 offF2.SetValue(lst, 0);
                             }
                             catch (Exception exSc) { Check(false, "滚轮步长断言异常：" + exSc.Message); }
@@ -2841,6 +2849,59 @@ namespace BreadLauncher
                     }
                 }
                 catch (Exception exDrag) { Check(false, "拖分组 + 滚轮落点断言异常：" + exDrag.Message); }
+
+            // ---------- 2026-11-06 「按应用以管理员身份运行」----------
+            // ★用户场景：某个软件平时能开，但要管理员才解锁全部功能。所以提权是**按条目**的，
+            //   而且只能对「磁盘上的真实文件」提（UWP / 协议地址没有 exe，Windows 不给提）。
+            //   这里全部是**纯函数级**断言：不真的启动、不真的弹 UAC。
+            try
+            {
+                // ★用带参数的构造器：Key 是在构造/Refresh 时按 Path 算出来的，
+                //   先 new 再改 Path 会让 Key 停在空串（第一版断言就这么假红过一次）。
+                AppEntry realFile = new AppEntry("记事本（探针）", @"C:\Windows\notepad.exe");
+                AppEntry proto = new AppEntry("Steam 协议项（探针）", "steam://run/440");
+                AppEntry uwp = new AppEntry("商店应用（探针）", "microsoft.windowscalculator_8wekyb3d8bbwe!app");
+
+                string e1, e2, e3;
+                System.Diagnostics.ProcessStartInfo pAdmin = Launcher.BuildStartInfo(realFile, true, out e1);
+                System.Diagnostics.ProcessStartInfo pPlain = Launcher.BuildStartInfo(realFile, false, out e2);
+                System.Diagnostics.ProcessStartInfo pUwp = Launcher.BuildStartInfo(uwp, true, out e3);
+                bool verbOk = pAdmin != null && pAdmin.Verb == "runas"
+                              && pPlain != null && string.IsNullOrEmpty(pPlain.Verb)
+                              && pUwp != null && pUwp.FileName == "explorer.exe";
+                Check(verbOk,
+                    "提权只加在「真实文件」上：真实文件 + 提权 → Verb=runas（实测「" + (pAdmin == null ? "" : pAdmin.Verb)
+                    + "」）；不提权 → 没有 Verb（实测「" + (pPlain == null ? "" : pPlain.Verb) + "」）；"
+                    + "商店应用 → 仍然走 explorer（实测 FileName=「" + (pUwp == null ? "" : pUwp.FileName) + "」）");
+
+                bool canOk = Launcher.CanElevate(realFile) && Launcher.CanElevate(proto) == false && Launcher.CanElevate(uwp) == false;
+                LaunchResult ur = Launcher.Launch(uwp, true, out e3);
+                Check(canOk && ur == LaunchResult.ElevationUnsupported,
+                    "「能不能提权」判得对：真实文件=可以、协议项=不行、商店应用=不行；对商店应用硬要提权时返回 "
+                    + ur + "（期望 ElevationUnsupported，由界面回退普通启动并说明原因）");
+
+                // 「总是以管理员运行」的开关：加进去 / 读得出来 / 再关掉（走的是真配置字段）
+                bool wasAdmin = f.IsAlwaysAdmin(realFile);
+                f.SetAlwaysAdmin(realFile, true);
+                bool onOk = f.IsAlwaysAdmin(realFile);
+                f.SetAlwaysAdmin(realFile, false);
+                bool offOk = f.IsAlwaysAdmin(realFile) == false;
+                if (wasAdmin) f.SetAlwaysAdmin(realFile, true);      // 还原
+                Check(onOk && offOk,
+                    "「总是以管理员运行」这个开关能开关、记得住：开→" + onOk + "、关→" + offOk
+                    + "（存在 Settings.AdminKeys 里，跟着 Key 走，跨分组跨重启都有效）");
+
+                // 右键菜单里必须真有这两项（用户找不到入口 = 功能等于没做）
+                ContextMenuStrip admMenu = f.BuildTileMenu(gv, realFile);
+                string admText = "";
+                for (int i = 0; i < admMenu.Items.Count; i++) admText += admMenu.Items[i].Text + " | ";
+                admMenu.Dispose();
+                bool hasOnce = admText.IndexOf("以管理员身份运行") >= 0;
+                bool hasAlways = admText.IndexOf("总是以管理员运行：") >= 0;
+                Check(hasOnce && hasAlways,
+                    "右键应用菜单里有「以管理员身份运行」和「总是以管理员运行：已开启/已关闭」两项（实测：" + admText + "）");
+            }
+            catch (Exception exAdmin) { Check(false, "「按应用提权」断言异常：" + exAdmin.Message); }
 
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();

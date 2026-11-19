@@ -60,6 +60,11 @@ namespace BreadLauncher
         /// 不用悬停。右键应用 →「名字常驻显示」切换。</summary>
         public List<string> NameLabels = new List<string>();
 
+        /// <summary>★2026-11-06：「总是以管理员身份运行」的应用（`AppEntry.Key` 列表）。
+        /// 用户场景：某个软件平时能开，但要管理员才解锁全部功能 —— 勾上之后**左键点它**也会弹 UAC 提权。
+        /// 右键应用 →「总是以管理员运行」切换；只有独立 exe 的条目能提权（商店应用 / 协议链接不行）。</summary>
+        public List<string> AdminKeys = new List<string>();
+
         /// <summary>鼠标停在小图标上时是否浮出名字（设置菜单里可关；默认开）。</summary>
         public bool HoverNames = true;
 
@@ -424,6 +429,23 @@ namespace BreadLauncher
             if (s.Pinned == null) s.Pinned = new List<string>();
             if (s.FirstSeen == null) s.FirstSeen = new Dictionary<string, long>();
             if (s.Groups == null) s.Groups = new List<AppGroup>();
+            if (s.NameLabels == null) s.NameLabels = new List<string>();
+            if (s.AdminKeys == null) s.AdminKeys = new List<string>();
+            // 「总是以管理员运行」的 Key 去重、去空（手改配置也不会污染）
+            {
+                HashSet<string> adminSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                List<string> adminClean = new List<string>();
+                for (int i = 0; i < s.AdminKeys.Count; i++)
+                {
+                    string k = s.AdminKeys[i];
+                    if (string.IsNullOrEmpty(k)) continue;
+                    k = k.Trim();
+                    if (k.Length == 0 || adminSeen.Contains(k)) continue;
+                    adminSeen.Add(k);
+                    adminClean.Add(k);
+                }
+                s.AdminKeys = adminClean;
+            }
 
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<AppGroup> clean = new List<AppGroup>();
