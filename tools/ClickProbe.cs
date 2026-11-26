@@ -3123,6 +3123,96 @@ namespace BreadLauncher
                         else NoteSkip("组少于 3 个，测不了「真拖进空位」");
                     }
 
+                    // ★拖动落地：占位框 = 松手后的真实位置；松手不弹回顶部；顺手存一张「拖动中」的图
+                    {
+                        List<GroupView> gQ = (List<GroupView>)Field(f, "_groups");
+                        MethodInfo mDnQ = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mMvQ = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mUpQ = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (gQ.Count >= 2 && mDnQ != null)
+                        {
+                            f.Size = new Size(f.Width, Theme.Px(f, 700));
+                            Application.DoEvents();
+                            System.Collections.IList tlQ = (System.Collections.IList)Field(f, "_tiles");
+                            Rectangle r0q = (Rectangle)tlQ[0].GetType().GetField("Rect").GetValue(tlQ[0]);
+                            Rectangle r1q = (Rectangle)tlQ[1].GetType().GetField("Rect").GetValue(tlQ[1]);
+                            int topQ = (int)Field(f, "_groupTop"), scrQ = (int)Field(f, "_scrollY");
+                            Point fromQ = new Point(r0q.X + Theme.Px(f, 4), topQ + r0q.Y - scrQ + Theme.Px(f, 4));
+                            Point toQ = new Point(r1q.X + Theme.Px(f, 4), topQ + r1q.Y - scrQ + Theme.Px(f, 4));
+                            string movedQ = gQ[0].Name;
+                            mDnQ.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, fromQ.X, fromQ.Y, 0) });
+                            mMvQ.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, toQ.X, toQ.Y, 0) });
+                            Rectangle dropQ = (Rectangle)Field(f, "_dropRect");
+                            // 拖动中出一张图（离屏渲染，不抓屏）
+                            try
+                            {
+                                using (Bitmap shotQ = f.RenderToBitmap())
+                                    shotQ.Save(Path.Combine(Program.AppDir, "drag-placeholder.png"), System.Drawing.Imaging.ImageFormat.Png);
+                            }
+                            catch (Exception) { }
+                            mUpQ.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, toQ.X, toQ.Y, 0) });
+                            List<GroupView> gQ2 = (List<GroupView>)Field(f, "_groups");
+                            int idxQ = -1;
+                            for (int q = 0; q < gQ2.Count; q++) if (gQ2[q].Name == movedQ) { idxQ = q; break; }
+                            System.Collections.IList tlQ2 = (System.Collections.IList)Field(f, "_tiles");
+                            Rectangle realQ = Rectangle.Empty;
+                            if (idxQ >= 0 && idxQ < tlQ2.Count)
+                            {
+                                Rectangle rr = (Rectangle)tlQ2[idxQ].GetType().GetField("Rect").GetValue(tlQ2[idxQ]);
+                                realQ = new Rectangle(rr.X, (int)Field(f, "_groupTop") + rr.Y - (int)Field(f, "_scrollY"), rr.Width, rr.Height);
+                            }
+                            bool nearQ = dropQ.Width > 0 && realQ.Width > 0
+                                         && Math.Abs(dropQ.X - realQ.X) <= Theme.Px(f, 2)
+                                         && Math.Abs(dropQ.Y - realQ.Y) <= Theme.Px(f, 2);
+                            Check(nearQ, "拖动时的占位框 = 松手后的真实位置（占位 " + dropQ + " / 实际 " + realQ + "）");
+                        }
+                        else NoteSkip("组少于 2 个，测不了「占位框=真实落点」");
+                    }
+
+                    // ★贴边自动滚：速度函数的符号与单调性（真推进由定时器做，预览模式不推进）
+                    {
+                        MethodInfo mSpd = typeof(MainForm).GetMethod("AutoScrollSpeedFor", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (mSpd != null)
+                        {
+                            int gTopS = (int)Field(f, "_groupTop"), gHS = (int)Field(f, "_groupHeight");
+                            int topSp = (int)mSpd.Invoke(f, new object[] { new Point(100, gTopS + 2) });
+                            int topMid = (int)mSpd.Invoke(f, new object[] { new Point(100, gTopS + Theme.Px(f, 30)) });
+                            int midSp = (int)mSpd.Invoke(f, new object[] { new Point(100, gTopS + gHS / 2) });
+                            int botSp = (int)mSpd.Invoke(f, new object[] { new Point(100, gTopS + gHS - 2) });
+                            Check(topSp < 0 && botSp > 0 && midSp == 0 && Math.Abs(topSp) >= Math.Abs(topMid),
+                                "贴边自动滚速度：上边缘 " + topSp + "（应<0）、带内浅处 " + topMid + "、正中 " + midSp + "（应=0）、下边缘 " + botSp + "（应>0），越靠边越快");
+                        }
+                        else NoteSkip("找不到 AutoScrollSpeedFor，测不了贴边自动滚");
+                    }
+
+                    // ★拖动中按 Esc = 取消（顺序不变、面板没关）
+                    {
+                        List<GroupView> gE2 = (List<GroupView>)Field(f, "_groups");
+                        MethodInfo mDnE2 = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mMvE2 = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mKeyE2 = typeof(MainForm).GetMethod("OnKeyDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (gE2.Count >= 2 && mDnE2 != null)
+                        {
+                            System.Collections.IList tlE3 = (System.Collections.IList)Field(f, "_tiles");
+                            Rectangle ra = (Rectangle)tlE3[0].GetType().GetField("Rect").GetValue(tlE3[0]);
+                            Rectangle rb = (Rectangle)tlE3[1].GetType().GetField("Rect").GetValue(tlE3[1]);
+                            int gTopE3 = (int)Field(f, "_groupTop"), scrE3 = (int)Field(f, "_scrollY");
+                            Point pa = new Point(ra.X + Theme.Px(f, 4), gTopE3 + ra.Y - scrE3 + Theme.Px(f, 4));
+                            Point pb = new Point(rb.X + Theme.Px(f, 4), gTopE3 + rb.Y - scrE3 + Theme.Px(f, 4));
+                            string ord0 = "";
+                            for (int q = 0; q < gE2.Count; q++) ord0 += gE2[q].Name + ",";
+                            mDnE2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pa.X, pa.Y, 0) });
+                            mMvE2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, pb.X, pb.Y, 0) });
+                            mKeyE2.Invoke(f, new object[] { new KeyEventArgs(Keys.Escape) });
+                            List<GroupView> gE3 = (List<GroupView>)Field(f, "_groups");
+                            string ord1 = "";
+                            for (int q = 0; q < gE3.Count; q++) ord1 += gE3[q].Name + ",";
+                            Check(ord0 == ord1 && f.IsDisposed == false && (bool)Field(f, "_dragActive") == false,
+                                "拖动中按 Esc = 取消这次拖动（顺序没变、面板没关、拖动态已清）");
+                        }
+                        else NoteSkip("组少于 2 个，测不了「Esc 取消拖动」");
+                    }
+
                     // 右键菜单里真有这一项，且写的是「几列」
                     ContextMenuStrip ctMenu = f.BuildTileMenu(cg0, null);
                     string ctTexts = "";

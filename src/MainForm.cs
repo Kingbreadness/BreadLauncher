@@ -106,7 +106,11 @@ namespace BreadLauncher
         // 拖动分组（调位置）：按下记来源，移动超过阈值才算拖动，松手落到目标下标
         private int _dragFrom = -1;
         private int _dragTo = -1;
-        private int _dropLineX;      // 拖动分组时「会插在这儿」的竖线 x（空位里也能看见）
+        private Rectangle _dropRect;     // 拖动分组时的「占位空洞」：松手后它会落在这个框里（客户区坐标）
+        private Point _dropCommitPt;     // 上一次真正更新落点的指针位置（迟滞用）
+        private bool _captureOwned;      // 这次 Capture 是我们自己要的（用来忽略「设置 Capture 时同步冒出来的」CaptureChanged）
+        private System.Windows.Forms.Timer _autoScrollTimer;  // 拖动到面板上下边缘时自动滚动
+        private Point _dragPt;           // 拖动中光标的客户区坐标（自动滚动要用）
         private bool _dragActive;
         private bool _dragOnIcon;     // 从图标上起拖 = 需要更大位移，避免吃掉「点一下启动」
 
@@ -428,6 +432,20 @@ namespace BreadLauncher
             // 拖动 / 缩放期间的合并定时器（见字段注释）
             _dragTimer.Interval = 10;
             _dragTimer.Tick += delegate { ApplyDragTarget(); };
+
+            // 拖动到分组区上下边缘时自动滚（业界惯例：边缘带宽约 20%、越靠边越快）
+            _autoScrollTimer = new System.Windows.Forms.Timer();
+            _autoScrollTimer.Interval = 30;
+            _autoScrollTimer.Tick += delegate
+            {
+                if (_dragActive == false && _iconDrag == false) { _autoScrollTimer.Stop(); return; }
+                int sp = AutoScrollSpeedFor(_dragPt);
+                if (sp == 0) { _autoScrollTimer.Stop(); return; }
+                ScrollGroups(sp);
+                _dropCommitPt = Point.Empty;
+                if (_dragActive && _dragFrom >= 0) _dropRect = ComputeDropRect(_dragPt);
+                Invalidate();
+            };
 
             // ★分层窗口的绘制驱动：WM_PAINT 不会来，只能自己推帧（见 _frameDirty 的说明）。
             //   只在「脏」的时候跑，空闲时 0 开销；15ms 是为了把一串 Invalidate 合并成一帧。
@@ -791,6 +809,83 @@ namespace BreadLauncher
 
         private void InvalidateTiles() { _layoutDirty = true; Invalidate(); }
 
+        /// <summary>按给定顺序算一份排布（不碰 _tiles）。松手后的真实排布与「拖动中的占位框」必须同源，
+        /// 否则会「占位框在这儿、松手却跑到别处」。</summary>
+        private List<TileBox> LayoutOrder(List<int> order, out int contentH)
+        {
+            List<TileBox> list = new List<TileBox>();
+            int pad = PadOuter;
+            int avail = _groupWidth > 0 ? _groupWidth : Math.Max(1, ClientSize.Width - PadOuter * 2);
+            int cx = 0, cy = 0, rowH = 0, rowStart = 0;
+            if (order != null)
+            {
+                for (int k = 0; k < order.Count; k++)
+                {
+                    int gi = order[k];
+                    if (gi < 0 || gi >= _groups.Count) continue;
+                    int span = SpanOf(_groups[gi]);
+                    int tw, ch, nh, cols, rows, gapXUsed, padY;
+                    BoxMetrics(span, out tw, out ch, out nh, out cols, out rows, out gapXUsed, out padY);
+                    if (cx > 0 && cx + tw > avail)
+                    {
+                        for (int q = rowStart; q < list.Count; q++)
+                        {
+                            Rectangle rr = list[q].Rect;
+                            rr.Y = cy + rowH - rr.Height;
+                            list[q].Rect = rr;
+                        }
+                        cx = 0; cy += rowH + GapY; rowH = 0; rowStart = list.Count;
+                    }
+                    TileBox b = new TileBox();
+                    b.Rect = new Rectangle(cx, cy, tw, ch + nh);
+                    b.Span = span; b.Tw = tw; b.ContainerH = ch; b.NameH = nh;
+                    b.Cols = cols; b.Rows = rows; b.GapXUsed = gapXUsed; b.PadY = padY;
+                    list.Add(b);
+                    cx += tw + GapX;
+                    if (ch + nh > rowH) rowH = ch + nh;
+                }
+                for (int q = rowStart; q < list.Count; q++)
+                {
+                    Rectangle rr = list[q].Rect;
+                    rr.Y = cy + rowH - rr.Height;
+                    list[q].Rect = rr;
+                }
+            }
+            int usedW = 0;
+            for (int i = 0; i < list.Count; i++) if (list[i].Rect.Right > usedW) usedW = list[i].Rect.Right;
+            int shift = pad + Math.Max(0, (avail - usedW) / 2);
+            for (int i = 0; i < list.Count; i++)
+            {
+                Rectangle r = list[i].Rect;
+                r.X += shift;
+                list[i].Rect = r;
+            }
+            contentH = list.Count == 0 ? TileH : cy + rowH;
+            return list;
+        }
+
+        /// <summary>拖动分组时：松手会落在哪个框里（客户区坐标）。用「移动之后的顺序」真的排一遍再取那个框。</summary>
+        private Rectangle ComputeDropRect(Point p)
+        {
+            if (_dragFrom < 0 || _groups == null || _groups.Count == 0) return Rectangle.Empty;
+            int ins = InsertSlotFor(p, _dragFrom);
+            int to = DropSlotToIndex(ins, _dragFrom);
+            if (to == _dragFrom) return Rectangle.Empty;
+            List<int> order = new List<int>();
+            for (int i = 0; i < _groups.Count; i++) order.Add(i);
+            int moving = order[_dragFrom];
+            order.RemoveAt(_dragFrom);
+            if (to < 0) to = 0;
+            if (to > order.Count) to = order.Count;
+            order.Insert(to, moving);
+            int ch;
+            List<TileBox> preview = LayoutOrder(order, out ch);
+            if (to < 0 || to >= preview.Count) return Rectangle.Empty;
+            Rectangle r = preview[to].Rect;
+            r.Y = _groupTop + r.Y - _scrollY;
+            return r;
+        }
+
         private void RebuildTiles()
         {
             _tiles.Clear();
@@ -1146,6 +1241,9 @@ namespace BreadLauncher
                 }
             }
 
+            // ★拖动副本：半透明的「我正拎着它」跟随光标（自绘窗口没有系统拖影，不给这个就没有「抓着东西」的感觉）
+            DrawDragGhost(g);
+
             // ★底栏三个按钮必须**自己画进位图**：分层窗口不合成子控件（实测：ULW 窗口里的 Button 完全不显示）。
             //   控件本身还留着 —— 它负责吃鼠标、hover/按下状态、弹菜单的锚点。
             RenderFooterButtons(g);
@@ -1153,6 +1251,32 @@ namespace BreadLauncher
             // 边框：俁 v1.22 的画法（方角矩形）。用户 2026-10-21 看 A/B 图后选了这个（右边的圆角线看着多了一条）。
             using (Pen pen = new Pen(Theme.Border))
                 g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+
+        /// <summary>拖动中的半透明副本（跟光标走）。★只在拖动时画，不参与命中；超出面板的部分由分层窗口自己裁掉。</summary>
+        private void DrawDragGhost(Graphics g)
+        {
+            if (_dragActive == false || _dragFrom < 0 || _dragFrom >= _groups.Count) return;
+            TileBox tb = BoxOf(_dragFrom);
+            if (tb == null) return;
+            int w = Math.Min(tb.Tw, Width / 2);
+            int h = Math.Min(tb.ContainerH, Height / 2);
+            int gx = _dragPt.X - w / 2, gy = _dragPt.Y - h / 2;
+            int rad = Theme.Px(this, 14);
+            // 柔和投影：两层低 alpha 圆角
+            Theme.FillRound(g, new Rectangle(gx + Theme.Px(this, 3), gy + Theme.Px(this, 5), w, h), rad,
+                Color.FromArgb(40, 0, 0, 0));
+            Theme.FillRound(g, new Rectangle(gx + Theme.Px(this, 1), gy + Theme.Px(this, 2), w, h), rad,
+                Color.FromArgb(55, 0, 0, 0));
+            // 卡片本体（半透明）
+            Theme.FillRound(g, new Rectangle(gx, gy, w, h), rad,
+                Color.FromArgb(190, Theme.Surface.R, Theme.Surface.G, Theme.Surface.B));
+            Theme.DrawRound(g, new Rectangle(gx, gy, w, h), rad,
+                Color.FromArgb(220, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B), 1.6f);
+            // 名字
+            Theme.DrawText(g, _groups[_dragFrom].Name, Theme.Ui(9f),
+                new Rectangle(gx, gy + h - Theme.Px(this, 26), w, Theme.Px(this, 26)),
+                Theme.TextPrimary, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
         /// <summary>把底栏三个按钮画进整帧（见 FlatButton.RenderTo 的说明）。</summary>
@@ -1241,14 +1365,19 @@ namespace BreadLauncher
             g.SetClip(new Rectangle(0, _groupTop, Math.Max(1, Width), Math.Max(1, _groupHeight)), CombineMode.Replace);
 
             // 拖动分组时：在「松手会插进去的位置」画一根竖线（空位里也能看见，用户 2026-11-26 要的）
-            if (_dragActive && _dropLineX > 0 && _tiles.Count > 0)
+            // ★拖动分组时的落点提示：**占位空洞**（松手后它会落在这个框里）。
+            //   以前是一根「整列高的竖线 + 目标卡描边」：宽卡 / 行尾窄空位时说不清，还会从别的卡片中间穿过去。
+            if (_dragActive && _dragFrom >= 0 && _dropRect.Width > 0)
             {
-                int topL = _groupTop + _tiles[0].Rect.Y - _scrollY;
-                int botL = _groupTop + _tiles[_tiles.Count - 1].Rect.Y - _scrollY + _tiles[_tiles.Count - 1].Rect.Height;
-                if (botL > _groupTop + _groupHeight) botL = _groupTop + _groupHeight;
-                if (topL < _groupTop) topL = _groupTop;
-                using (Pen lp = new Pen(Theme.Accent, 3f))
-                    g.DrawLine(lp, _dropLineX, topL + Theme.Px(this, 6), _dropLineX, botL - Theme.Px(this, 6));
+                Rectangle dr = _dropRect;
+                int rad = Theme.Px(this, 18);
+                Theme.FillRound(g, dr, rad, Color.FromArgb(30, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B));
+                using (Pen dp = new Pen(Color.FromArgb(215, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B), 2f))
+                {
+                    dp.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+                    dp.DashPattern = new float[] { 4f, 3f };
+                    using (System.Drawing.Drawing2D.GraphicsPath gp = Theme.Round(dr, rad)) g.DrawPath(dp, gp);
+                }
             }
 
             for (int i = 0; i < _groups.Count; i++)
@@ -1723,6 +1852,7 @@ namespace BreadLauncher
                     _downValid = false;
                     BeginDrag();
                     Capture = true;
+                    _captureOwned = true;
                     Cursor = Cursors.SizeWE;
                     base.OnMouseDown(e);
                     return;
@@ -1742,6 +1872,7 @@ namespace BreadLauncher
                     _panelGrabBounds = Bounds;
                     BeginDrag();
                     Capture = true;
+                    _captureOwned = true;
                     base.OnMouseDown(e);
                     return;
                 }
@@ -1756,6 +1887,7 @@ namespace BreadLauncher
                     _panelGrabBounds = Bounds;
                     BeginDrag();
                     Capture = true;
+                    _captureOwned = true;
                     base.OnMouseDown(e);
                     return;
                 }
@@ -1784,9 +1916,12 @@ namespace BreadLauncher
                     {
                         _dragFrom = index;
                         _dragTo = index;
+                        _dropCommitPt = Point.Empty;
+                        _dropRect = Rectangle.Empty;
                     }
                     _dragOnIcon = slot >= 0;
-                    Capture = true;   // 抓鼠标：确保松手一定收到 MouseUp，不会卡在「拖动中」
+                    Capture = true;
+                    _captureOwned = true;   // 抓鼠标：确保松手一定收到 MouseUp，不会卡在「拖动中」
                 }
                 else
                 {
@@ -1797,6 +1932,7 @@ namespace BreadLauncher
                     _panelGrabBounds = Bounds;
                     BeginDrag();
                     Capture = true;
+                    _captureOwned = true;
                 }
             }
             base.OnMouseDown(e);
@@ -1932,8 +2068,22 @@ namespace BreadLauncher
                     _dragActive = true;
                 if (_dragActive)
                 {
-                    _dragTo = DropSlotToIndex(InsertSlotFor(e.Location, _dragFrom), _dragFrom);
-                    _dropLineX = DropLineX(e.Location, _dragFrom);   // 竖线提示：松手会插在哪儿
+                    int hyst = Theme.Px(this, 8);
+                    if (_dropCommitPt.IsEmpty
+                        || Math.Abs(e.X - _dropCommitPt.X) >= hyst
+                        || Math.Abs(e.Y - _dropCommitPt.Y) >= hyst)
+                    {
+                        _dropCommitPt = e.Location;
+                        _dragTo = DropSlotToIndex(InsertSlotFor(e.Location, _dragFrom), _dragFrom);
+                        _dropRect = ComputeDropRect(e.Location);
+                    }
+                    _dragPt = e.Location;
+                    // 贴边防边缘自动滚（预览/探针模式不推进，免得把断言搅乱）
+                    if (PreviewMode == false && AutoScrollSpeedFor(e.Location) != 0)
+                    {
+                        if (_autoScrollTimer.Enabled == false) _autoScrollTimer.Start();
+                    }
+                    else if (_autoScrollTimer.Enabled) _autoScrollTimer.Stop();
                     Cursor = Cursors.SizeAll;
                     Invalidate();
                     base.OnMouseMove(e);
@@ -1982,7 +2132,21 @@ namespace BreadLauncher
         {
             base.OnMouseCaptureChanged(e);
             if (Capture) return;
+            if (_captureOwned == false) return;   // ★不是我们要的那次 Capture（设置时可能同步冒一次）→ 别清状态
+            _captureOwned = false;
             bool lost = false;
+            if (_dragActive || _dragFrom >= 0)
+            {
+                _dragActive = false; _dragFrom = -1; _dragTo = -1;
+                _dropRect = Rectangle.Empty; _dropCommitPt = Point.Empty;
+                lost = true;
+            }
+            if (_iconDrag)
+            {
+                _iconDrag = false; _iconDragGroup = -1; _iconDragFrom = -1; _iconDragTo = -1;
+                _iconDragAbs = -1; _iconDragPage = -1;
+                lost = true;
+            }
             if (_tileResizing) { _tileResizing = false; _tileResizeGroup = -1; lost = true; }
             if (_panelMoving) { _panelMoving = false; lost = true; }
             if (_panelResizing) { _panelResizing = false; lost = true; }
@@ -2017,6 +2181,9 @@ namespace BreadLauncher
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
+            // ★先清「是我们自己要的捕获」标记，再松捕获：否则松手时那次 CaptureChanged 会被当成
+            //   「丢捕获」把拖动状态清掉，落点就提交不了（探针里表现为「拖了没反应」）
+            _captureOwned = false;
             try { Capture = false; } catch (Exception) { }
 
             // ★2026-11-23：拖「文件夹大小」抓手结束 —— 大小已经在拖动过程中实时应用，这里只落盘
@@ -2097,8 +2264,11 @@ namespace BreadLauncher
                 _downValid = false;            // ★同上
                 _dragFrom = -1;
                 _dragTo = -1;
+                _dropRect = Rectangle.Empty;
+                _dropCommitPt = Point.Empty;
+                if (_autoScrollTimer != null) _autoScrollTimer.Stop();
                 Cursor = Cursors.Default;
-                if (to >= 0 && to != from) MoveGroupTo(from, to);
+                if (to >= 0 && to != from) MoveGroupTo(from, to, true);
                 Invalidate();
                 return;
             }
@@ -2214,6 +2384,36 @@ namespace BreadLauncher
             base.OnMouseWheel(e);
         }
 
+        /// <summary>拖到分组区上下边缘时要自动滚多少像素（正=往下）。0 = 不滚。
+        /// 带宽 = 分组区高的 20%（最少 48px），速度按「进入带里的比例」平方增长，最高约 1500px/s（30ms 一拍 → 45px）。
+        /// ★纯函数，探针直接断言；真正推进由 _autoScrollTimer 做（预览/探针模式不推进，免得把断言搅乱）。</summary>
+        private int AutoScrollSpeedFor(Point p)
+        {
+            if (_groupHeight <= 0) return 0;
+            int band = (int)(_groupHeight * 0.20);
+            if (band < Theme.Px(this, 48)) band = Theme.Px(this, 48);
+            if (band * 2 >= _groupHeight) band = Math.Max(1, _groupHeight / 2 - 1);
+            int top = _groupTop, bottom = _groupTop + _groupHeight;
+            int maxStep = 45;     // 30ms 一拍 → 约 1500px/s
+            if (p.Y < top + band)
+            {
+                int d = (top + band) - p.Y;
+                if (d > band) d = band;
+                double t = (double)d / band;
+                int sp = (int)Math.Round(maxStep * t * t);
+                return sp < 1 ? -1 : -sp;
+            }
+            if (p.Y > bottom - band)
+            {
+                int d = p.Y - (bottom - band);
+                if (d > band) d = band;
+                double t = (double)d / band;
+                int sp = (int)Math.Round(maxStep * t * t);
+                return sp < 1 ? 1 : sp;
+            }
+            return 0;
+        }
+
         private void ScrollGroups(int delta)
         {
             if (MaxScroll <= 0) return;
@@ -2229,7 +2429,27 @@ namespace BreadLauncher
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.Escape) { Close(); e.SuppressKeyPress = true; return; }
+            if (e.KeyCode == Keys.Escape)
+            {
+                // ★拖动中按 Esc = 取消这次拖动（回原位），不关面板；不在拖动/调列数时才关
+                if (_dragActive || _iconDrag || _tileResizing)
+                {
+                    _dragActive = false; _dragFrom = -1; _dragTo = -1;
+                    _iconDrag = false; _iconDragGroup = -1; _iconDragFrom = -1; _iconDragTo = -1;
+                    _iconDragAbs = -1; _iconDragPage = -1;
+                    _tileResizing = false; _tileResizeGroup = -1;
+                    _dropRect = Rectangle.Empty; _dropCommitPt = Point.Empty;
+                    if (_autoScrollTimer != null) _autoScrollTimer.Stop();
+                    try { Capture = false; } catch (Exception) { }
+                    Cursor = Cursors.Default;
+                    Invalidate();
+                    e.SuppressKeyPress = true;
+                    return;
+                }
+                Close();
+                e.SuppressKeyPress = true;
+                return;
+            }
 
             // ★2026-10-21 新增：**数字键 1~9 = 快启**。
             //   鼠标停在哪个文件夹上，就启动那一页的第 N 个应用（和点图标一样走 LaunchEntry）。
@@ -2745,13 +2965,19 @@ namespace BreadLauncher
 
         private void MoveGroupTo(int from, int to)
         {
+            MoveGroupTo(from, to, false);
+        }
+
+        private void MoveGroupTo(int from, int to, bool keepScroll)
+        {
             if (from < 0 || to < 0) return;
             if (from >= _settings.Groups.Count || to >= _settings.Groups.Count) return;
             if (from == to) return;
             AppGroup g = _settings.Groups[from];
             _settings.Groups.RemoveAt(from);
             _settings.Groups.Insert(to, g);
-            SaveGroups();
+            if (keepScroll) SaveGroupsKeepScroll();
+            else SaveGroups();
         }
 
         /// <summary>★2026-11-23：把**指定那一个**文件夹改成「占几列」（1/2/3）。图标尺寸固定不变。
@@ -2818,6 +3044,17 @@ namespace BreadLauncher
         {
             PersistSettings();
             RefreshContent();
+        }
+
+        /// <summary>搬完分组之后用：重排但保住滚动位置（否则松手就弹回顶部，像「没搬成」）。</summary>
+        private void SaveGroupsKeepScroll()
+        {
+            PersistSettings();
+            int keep = _scrollY;
+            RefreshContent();
+            int maxS = MaxScroll;
+            _scrollY = keep > maxS ? maxS : (keep < 0 ? 0 : keep);
+            Invalidate();
         }
 
         private bool GroupNameExists(string name)
@@ -3572,7 +3809,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.33\n\n" +
+                    "BreadLauncher 1.34\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +
