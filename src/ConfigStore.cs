@@ -23,7 +23,8 @@ namespace BreadLauncher
         public bool GridMode = false;
         /// <summary>亚克力半透明（默认关闭：纯色更稳，用户可在设置里打开试试）。</summary>
         public bool Acrylic = true;      // ★默认开启（用户要的：一打开就是半透明效果）
-        /// <summary>文件夹大小（百分比，100 = 标准；设置菜单里可选 85 / 100 / 120）。</summary>
+        /// <summary>文件夹大小（百分比，100 = 标准；设置菜单里可选 85 / 100 / 120，也能直接拖文件夹右下角那条斜纹）。
+        /// ★2026-11-23 起它**只改文件夹方块大小**（一页能放几个跟着变），小图标尺寸固定不变。</summary>
         public int FolderScale = 100;
         /// <summary>面板位置（左上角，屏幕坐标）。负值 = 还没定过，按「贴鼠标所在屏的任务栏上方居中」自动放。</summary>
         public int PanelX = -1;

@@ -106,6 +106,7 @@ namespace BreadLauncher
         // 拖动分组（调位置）：按下记来源，移动超过阈值才算拖动，松手落到目标下标
         private int _dragFrom = -1;
         private int _dragTo = -1;
+        private int _dropLineX;      // 拖动分组时「会插在这儿」的竖线 x（空位里也能看见）
         private bool _dragActive;
         private bool _dragOnIcon;     // 从图标上起拖 = 需要更大位移，避免吃掉「点一下启动」
 
@@ -125,6 +126,14 @@ namespace BreadLauncher
         // 固定的拖动把手：顶部正中间那根小横条（用户要求「有个固定的地方去拖」）
         private Rectangle _gripRect;   // 画出来的那根条
         private Rectangle _gripHit;    // 可抓范围（比条大一圈）
+
+        // ★2026-11-23：拖「文件夹大小」—— 抓手在**每个文件夹名字带的右端**（那条本来就是死区，不挡图标）。
+        //   拖 = 改 FolderScale（方块大小），一页能放几个跟着变；图标尺寸不变。
+        private bool _tileResizing;
+        private int _tileResizeGroup = -1;   // 正在拖的是**哪个**文件夹（只改它自己的大小）
+        private Point _tileResizeStart;      // 屏幕坐标
+        private int _tileResizeStartSpan;
+        private int _tileGripHover = -1;     // 鼠标停在哪个文件夹的抓手上了（-1 = 没有）
         private bool _gripHot;         // 鼠标是否停在把手上
 
         // 面板自身的搬动 / 缩放（用户要求：位置和大小都能调，而且记得住）
@@ -384,7 +393,6 @@ namespace BreadLauncher
             Invalidate();
         }
 
-        private const int FolderCapacity = 9;
 
         private readonly HashSet<string> _requested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -505,24 +513,137 @@ namespace BreadLauncher
 
         // 尺寸（统一走 Theme.Px，跟着 DPI 缩放；再乘一个「文件夹大小」系数，设置菜单里可调）
         // 名字叫 UiScale：别叫 Scale，会盖住 Control.Scale(float)（编译器会警告 CS0108）。
+        // 尺寸与每个文件夹自己的大小（★2026-11-23：用户要的是**单个**文件夹能调，不是整体一起变）
+        // 统一走 Theme.Px（跟 DPI 缩放），再乘一个百分比。名字叫 UiScale：别叫 Scale，会盖住 Control.Scale(float)。
+        /// <summary>图标尺寸固定（IconScale），所以文件夹**最小**也得放得下 3×3 = 9 个
+        /// —— 老配置里的 85 / 100 会被抬到这个下限（用户要的是「别比以前少」）。</summary>
+        private double MinUiScale
+        {
+            get
+            {
+                int basePx = Theme.Px(this, 132);
+                if (basePx <= 0) return 0.6;
+                int need = 3 * MiniBox + 2 * MiniGap + 2 * MiniPad;
+                double v = (double)need / basePx;
+                return v < 0.6 ? 0.6 : v;
+            }
+        }
+        private int MinScalePct { get { return (int)Math.Ceiling(100.0 * MinUiScale); } }
         private double UiScale
         {
             get
             {
-                if (_settings == null || _settings.FolderScale <= 0) return 1.0;
-                return _settings.FolderScale / 100.0;
+                // ★注意：这里必须和 ScaleOf 用**同一套取整**（MinScalePct 是向上取整的百分比）。
+                //   以前这里用没取整的 MinUiScale，于是「全局默认方块」比「组里算出来的方块」小 1px，
+                //   探针按 TileW 推坐标就落在格子边缘 → 假 FAIL。
+                int pct = (_settings == null || _settings.FolderScale <= 0) ? 100 : _settings.FolderScale;
+                int minPct = MinScalePct;
+                if (pct < minPct) pct = minPct;
+                return pct / 100.0;
             }
         }
+        // 全局默认尺寸（没单独设过的文件夹用它；「面板最小高度 / 滚轮步长」这类不分组的场合也用它）
         private int TileW { get { return Theme.Px(this, 132 * UiScale); } }
         private int ContainerH { get { return Theme.Px(this, 132 * UiScale); } }
         private int GroupNameH { get { return Theme.Px(this, 26 * UiScale); } }
         private int TileH { get { return ContainerH + GroupNameH; } }
         private int GapX { get { return Theme.Px(this, 14); } }
+        /// <summary>一行大约能放几个（按**最大号**的文件夹算，只用于「把文件夹区居中」和探针的坐标推算）。
+        /// ★每个文件夹自己一行放几个，看 `TileBox.Cols`，别用这个。</summary>
+        private int Columns
+        {
+            get
+            {
+                int biggest = TileW;
+                EnsureTiles();
+                for (int i = 0; i < _tiles.Count; i++) if (_tiles[i].Tw > biggest) biggest = _tiles[i].Tw;
+                int width = _groupWidth > 0 ? _groupWidth : Math.Max(1, ClientSize.Width - PadOuter * 2);
+                return Math.Max(1, (width + GapX) / (biggest + GapX));
+            }
+        }
         private int GapY { get { return Theme.Px(this, 16); } }
-        private int MiniPad { get { return Theme.Px(this, 7 * UiScale); } }
-        private int MiniGap { get { return Theme.Px(this, 6 * UiScale); } }
-        private int MiniBox { get { return (TileW - MiniPad * 2 - MiniGap * 2) / 3; } }
-        private int MiniIconSize { get { return Theme.Px(this, 30 * UiScale); } }
+
+        /// <summary>★2026-11-23 用户：「图标就是原来那个大小，不然看不清」。
+        /// 小图标/格子/内边距**固定**在原来 120% 档的尺寸，不随文件夹大小变 ——
+        /// 文件夹变大只是**多放几格**（一页几个跟着变），图标本身永远这么大。</summary>
+        private const double IconScale = 1.2;
+        private int MiniPad { get { return Theme.Px(this, 7 * IconScale); } }
+        private int MiniGap { get { return Theme.Px(this, 6 * IconScale); } }
+        private int MiniBox { get { return Theme.Px(this, 35 * IconScale); } }
+        private int MiniIconSize { get { return Theme.Px(this, 30 * IconScale); } }
+
+        /// <summary>某个文件夹的排布（内容坐标，y 从 0 起；画的时候再减 _scrollY）。</summary>
+        private sealed class TileBox
+        {
+            public Rectangle Rect;      // 卡片本体 + 名字带
+            public int Span;            // 这个文件夹占几列（1/2/3）
+            public int Tw;
+            public int ContainerH;
+            public int NameH;
+            public int Cols;
+            public int Rows;
+            public int GapXUsed;        // 这个文件夹里图标之间的横向缝（多出来的宽度摊在这里，两端永远留 MiniPad）
+            public int PadY;            // 竖向：网格上下居中后的上边距
+            public int Capacity { get { return Cols * Rows; } }
+        }
+
+        /// <summary>★2026-11-23 第二版（用户：「有点乱七八糟，你有更好的方案吗」）：
+        /// 文件夹**高度统一**，只有**宽度**能调，而且宽度是「整列的倍数」（1 列 / 2 列 / 3 列）——
+        /// 这样每一行都齐、每个名字都在同一条线上，不会出现「一个高一个矮、名字乱飞」。
+        /// 组里存了就用组的（`AppGroup.Span`），没存就是 1 列。</summary>
+        private int SpanOf(GroupView gv)
+        {
+            int sp = (gv == null || gv.Group == null) ? 0 : gv.Group.Span;
+            if (sp < 1) sp = 1;
+            int max = MaxSpan;
+            if (sp > max) sp = max;
+            return sp;
+        }
+
+        /// <summary>这个面板最多能横着摆几列（1~3）。</summary>
+        private int MaxSpan
+        {
+            get
+            {
+                int avail = _groupWidth > 0 ? _groupWidth : Math.Max(1, ClientSize.Width - PadOuter * 2);
+                int cols = (avail + GapX) / (TileW + GapX);
+                if (cols < 1) cols = 1;
+                return cols > 3 ? 3 : cols;
+            }
+        }
+
+        /// <summary>按「占几列」算方块几何与一页能放几格（高度永远是标准高度）。</summary>
+        private void BoxMetrics(int span, out int tw, out int containerH, out int nameH, out int cols, out int rows)
+        {
+            int gapXUsed, padY;
+            BoxMetrics(span, out tw, out containerH, out nameH, out cols, out rows, out gapXUsed, out padY);
+        }
+
+        private void BoxMetrics(int span, out int tw, out int containerH, out int nameH, out int cols, out int rows, out int gapXUsed, out int padY)
+        {
+            if (span < 1) span = 1;
+            tw = span * TileW + (span - 1) * GapX;
+            containerH = ContainerH;
+            nameH = GroupNameH;
+            int cell = MiniBox + MiniGap;
+            if (cell < 1) cell = 1;
+            // ★先按标准缝算出能放几列，再把「多出来的宽度」平均摊到图标之间 ——
+            //   这样 1 列 / 2 列 / 3 列的文件夹，图标离卡片边缘的距离**完全一样**（以前 1 列是 13px、2 列是 28px，看着不齐）。
+            cols = (tw - MiniPad * 2 + MiniGap) / cell;
+            rows = (containerH - MiniPad * 2 + MiniGap) / cell;
+            if (cols < 1) cols = 1;
+            if (rows < 1) rows = 1;
+            gapXUsed = MiniGap;
+            if (cols > 1)
+            {
+                int slack = tw - MiniPad * 2 - cols * MiniBox;
+                gapXUsed = slack / (cols - 1);
+                if (gapXUsed < MiniGap) gapXUsed = MiniGap;
+            }
+            padY = (containerH - (rows * MiniBox + (rows - 1) * MiniGap)) / 2;
+            if (padY < MiniPad) padY = MiniPad;
+        }
+
         private int PadOuter { get { return Theme.Px(this, 28); } }
         // ============================================================
         // 建界面
@@ -661,36 +782,113 @@ namespace BreadLauncher
 
         // ============================================================
         // 布局
-        // ============================================================
-        private int Columns
+        // ★2026-11-23：每个文件夹可以**各自**大小不同，所以排布不再是「行×列」的固定网格，
+        //   而是**流式排布**：从左往右摆，一行摆不下就换行；行高 = 这一行里最高的那个。
+        //   所有几何（画 / 命中 / 抓手 / 格子）都读 _tiles，别的地方不要再自己按行列出坐标。
+        private readonly List<TileBox> _tiles = new List<TileBox>();
+        private int _contentH;
+        private bool _layoutDirty = true;
+
+        private void InvalidateTiles() { _layoutDirty = true; Invalidate(); }
+
+        private void RebuildTiles()
         {
-            get
+            _tiles.Clear();
+            int pad = PadOuter;
+            int avail = _groupWidth > 0 ? _groupWidth : Math.Max(1, ClientSize.Width - PadOuter * 2);
+            int cx = 0, cy = 0, rowH = 0, rowStart = 0;
+            if (_groups != null)
             {
-                int width = _groupWidth > 0 ? _groupWidth : Math.Max(1, ClientSize.Width - PadOuter * 2);
-                int cols = (width + GapX) / (TileW + GapX);
-                return Math.Max(1, cols);
+                for (int i = 0; i < _groups.Count; i++)
+                {
+                    int span = SpanOf(_groups[i]);
+                    int tw, ch, nh, cols, rows, gapXUsed, padY;
+                    BoxMetrics(span, out tw, out ch, out nh, out cols, out rows, out gapXUsed, out padY);
+                    if (cx > 0 && cx + tw > avail)
+                    {
+                        // 换行前先把这一行的**底边对齐**（矮的往下靠，名字那一排看起来是齐的）
+                        for (int k = rowStart; k < _tiles.Count; k++)
+                        {
+                            Rectangle rr = _tiles[k].Rect;
+                            rr.Y = cy + rowH - rr.Height;
+                            _tiles[k].Rect = rr;
+                        }
+                        cx = 0; cy += rowH + GapY; rowH = 0; rowStart = _tiles.Count;
+                    }
+                    TileBox b = new TileBox();
+                    b.Rect = new Rectangle(cx, cy, tw, ch + nh);
+                    b.Span = span;
+                    b.Tw = tw;
+                    b.ContainerH = ch;
+                    b.NameH = nh;
+                    b.Cols = cols;
+                    b.Rows = rows;
+                    b.GapXUsed = gapXUsed;
+                    b.PadY = padY;
+                    _tiles.Add(b);
+                    cx += tw + GapX;
+                    if (ch + nh > rowH) rowH = ch + nh;
+                }
             }
+            // 最后一行的底边也对齐（和上面同一条规矩）
+            for (int k = rowStart; k < _tiles.Count; k++)
+            {
+                Rectangle rr = _tiles[k].Rect;
+                rr.Y = cy + rowH - rr.Height;
+                _tiles[k].Rect = rr;
+            }
+
+            // ★第二趟：按**实际用到的宽度**整体居中（以前拿「最大号格子」估偏移，
+            //   一旦有文件夹被拖大，整片就被推得偏右、右边那几个被窗口切掉 —— 用户 2026-11-23 报的「其他都不太对了」）。
+            int usedW = 0;
+            for (int i = 0; i < _tiles.Count; i++) if (_tiles[i].Rect.Right > usedW) usedW = _tiles[i].Rect.Right;
+            int shift = pad + Math.Max(0, (avail - usedW) / 2);
+            for (int i = 0; i < _tiles.Count; i++)
+            {
+                Rectangle r = _tiles[i].Rect;
+                r.X += shift;
+                _tiles[i].Rect = r;
+            }
+            _groupLeft = shift;
+            _contentH = _tiles.Count == 0 ? TileH : cy + rowH;
+            _layoutDirty = false;
         }
 
-        private int GroupRows
+        private void EnsureTiles()
         {
-            get
-            {
-                int c = Columns;
-                if (_groups.Count == 0) return 0;
-                return (_groups.Count + c - 1) / c;
-            }
+            int n = _groups == null ? 0 : _groups.Count;
+            if (_layoutDirty || _tiles.Count != n) RebuildTiles();
+        }
+
+        private TileBox BoxOf(int groupIndex)
+        {
+            EnsureTiles();
+            if (groupIndex < 0 || groupIndex >= _tiles.Count) return null;
+            return _tiles[groupIndex];
+        }
+
+        /// <summary>某组一页能放几个（由那个文件夹自己的大小算出来）。</summary>
+        private int CapacityOf(int groupIndex)
+        {
+            TileBox b = BoxOf(groupIndex);
+            return b == null ? 1 : b.Capacity;
+        }
+
+        private int CapacityOf(GroupView gv)
+        {
+            int idx = GroupIndexOf(gv);
+            return idx < 0 ? 9 : CapacityOf(idx);
         }
 
         private int GroupContentHeight
         {
             get
             {
-                int rows = GroupRows;
-                if (rows == 0) return TileH;
-                return rows * TileH + (rows - 1) * GapY;
+                EnsureTiles();
+                return _contentH;
             }
         }
+
 
         private int MaxScroll
         {
@@ -774,10 +972,10 @@ namespace BreadLauncher
             _gripHit = new Rectangle(_gripRect.X - Theme.Px(this, 30), gripTop,
                                      _gripRect.Width + Theme.Px(this, 60), gripHitH);
 
-            int cols = Columns;
-            int gridW = cols * TileW + (cols - 1) * GapX;
-            _groupLeft = pad + Math.Max(0, (_groupWidth - gridW) / 2);
+            _groupLeft = pad;      // 真正的位置由 RebuildTiles 第二趟按实际用宽居中算出
             _groupHeight = Math.Max(Theme.Px(this, 40), footerY - Theme.Px(this, 10) - _groupTop);
+            _layoutDirty = true;   // 文件夹区的位置/宽度变了 → 重新排布
+
 
             int max = MaxScroll;
             if (_scrollY > max) _scrollY = max;
@@ -1032,29 +1230,39 @@ namespace BreadLauncher
 
         private void DrawGroups(Graphics g)
         {
-            int cols = Columns;
-            int tw = TileW;
-            int th = ContainerH;
-            int thAll = TileH;
-            int gx = GapX;
-            int gy = GapY;
             int miniPad = MiniPad;
             int miniGap = MiniGap;
             int miniBox = MiniBox;
             int radius = Theme.Px(this, 18);
             int corner = Theme.Px(this, 8);
+            EnsureTiles();
 
             GraphicsState state = g.Save();
             g.SetClip(new Rectangle(0, _groupTop, Math.Max(1, Width), Math.Max(1, _groupHeight)), CombineMode.Replace);
 
+            // 拖动分组时：在「松手会插进去的位置」画一根竖线（空位里也能看见，用户 2026-11-26 要的）
+            if (_dragActive && _dropLineX > 0 && _tiles.Count > 0)
+            {
+                int topL = _groupTop + _tiles[0].Rect.Y - _scrollY;
+                int botL = _groupTop + _tiles[_tiles.Count - 1].Rect.Y - _scrollY + _tiles[_tiles.Count - 1].Rect.Height;
+                if (botL > _groupTop + _groupHeight) botL = _groupTop + _groupHeight;
+                if (topL < _groupTop) topL = _groupTop;
+                using (Pen lp = new Pen(Theme.Accent, 3f))
+                    g.DrawLine(lp, _dropLineX, topL + Theme.Px(this, 6), _dropLineX, botL - Theme.Px(this, 6));
+            }
+
             for (int i = 0; i < _groups.Count; i++)
             {
-                int r = i / cols;
-                int c = i % cols;
-                int x = _groupLeft + c * (tw + gx);
-                int y = _groupTop + r * (thAll + gy) - _scrollY;
+                if (i >= _tiles.Count) break;
+                TileBox tb = _tiles[i];
+                int tw = tb.Tw;
+                int th = tb.ContainerH;
+                int thAll = tb.ContainerH + tb.NameH;
+                int x = tb.Rect.X;
+                int y = _groupTop + tb.Rect.Y - _scrollY;
                 if (y + thAll < _groupTop) continue;
                 if (y > _groupTop + _groupHeight) continue;
+
 
                 GroupView gv = _groups[i];
                 bool hoverBody = _hoverGroup == i;
@@ -1098,15 +1306,17 @@ namespace BreadLauncher
                 else
                 {
                     int page = PageOf(gv);
-                    int baseIdx = page * FolderCapacity;
-                    for (int s = 0; s < FolderCapacity; s++)
+                    int capNow = tb.Capacity;
+                    int baseIdx = page * capNow;
+                    for (int s = 0; s < capNow; s++)
                     {
                         int idx = baseIdx + s;
                         if (idx >= count) break;
-                        int mr = s / 3;
-                        int mc = s % 3;
-                        Rectangle cell = new Rectangle(x + miniPad + mc * (miniBox + miniGap),
-                                                       y + miniPad + mr * (miniBox + miniGap),
+                        int mr = s / tb.Cols;
+                        int mc = s % tb.Cols;
+                        // ★网格在卡片里水平居中：宽卡片（2/3 列）以前左边贴 8px、右边留 33px，和名字/页码点的中线对不上
+                        Rectangle cell = new Rectangle(x + miniPad + mc * (miniBox + tb.GapXUsed),
+                                                       y + tb.PadY + mr * (miniBox + miniGap),
                                                        miniBox, miniBox);
 
                         AppEntry cellApp = gv.Apps[idx];
@@ -1173,10 +1383,38 @@ namespace BreadLauncher
                     }
                 }
 
+                // 名字带：斜纹画在右端，名字太长时会被压在斜纹下面 —— 只在「真的会撞」的时候让出那一块
                 Rectangle nameRect = new Rectangle(x, y + th, tw, GroupNameH);
+                int gripReserve = Theme.Px(this, 24) + Theme.Px(this, 6);
+                Size nameSz = TextRenderer.MeasureText(gv.Name, Theme.Ui(10f));
+                if (nameSz.Width > tw - gripReserve * 2)
+                    nameRect = new Rectangle(x, y + th, Math.Max(Theme.Px(this, 40), tw - gripReserve), GroupNameH);
                 Theme.DrawText(g, gv.Name, Theme.Ui(10f), nameRect,
                     hoverBody ? Theme.TextPrimary : Theme.TextSecondary,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+                // ★2026-11-23：名字带右端那道「斜纹抓手」——拖它 = 文件夹变大变小（一页放几个跟着变）。
+                //   常驻淡淡的（不然用户根本不知道这儿能拖，见「隐形热区必须配可见提示」那条规矩），
+                //   鼠标压上去 / 正在拖 就亮成强调色。
+                Rectangle tgr = TileGripRect(i);
+                if (tgr.Width > 0 && tgr.Bottom > _groupTop && tgr.Top < _groupTop + _groupHeight)
+                {
+                    bool gOn = _tileResizing ? (_tileResizeGroup == i) : (_tileGripHover == i);
+                    int gAlpha = gOn ? 255 : 120;
+                    using (Pen gp = new Pen(Color.FromArgb(gAlpha,
+                        gOn ? Theme.Accent.R : Theme.TextSecondary.R,
+                        gOn ? Theme.Accent.G : Theme.TextSecondary.G,
+                        gOn ? Theme.Accent.B : Theme.TextSecondary.B), 1f))
+                    {
+                        int unit = Math.Max(2, tgr.Width / 4);
+                        for (int k = 1; k <= 3; k++)
+                        {
+                            int off = k * unit;
+                            g.DrawLine(gp, tgr.Right - off, tgr.Bottom - unit / 2,
+                                           tgr.Right - unit / 2, tgr.Bottom - off);
+                        }
+                    }
+                }
             }
 
             int max = MaxScroll;
@@ -1204,44 +1442,42 @@ namespace BreadLauncher
             //   y=678..682 命中 slot=0/1/2、y=690..717 命中 slot=3/4/5。
             //   判据：格子完整可见才画（坑清单第 3 条）—— 命中同样只认可见区。
             if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;   // ★半开区间：和 SetClip 的 [_groupTop, _groupTop+_groupHeight) 对齐（原来用 > 会多算最下面那一行，点得到但一个像素没画）
-            int cols = Columns;
-            int tw = TileW;
-            int thAll = TileH;
-            int gx = GapX;
-            int gy = GapY;
+            EnsureTiles();
 
             for (int i = 0; i < _groups.Count; i++)
             {
-                int r = i / cols;
-                int c = i % cols;
-                int x = _groupLeft + c * (tw + gx);
-                int y = _groupTop + r * (thAll + gy) - _scrollY;
+                TileBox tb = BoxOf(i);
+                if (tb == null) continue;
+                int tw = tb.Tw;
+                int x = tb.Rect.X;
+                int y = _groupTop + tb.Rect.Y - _scrollY;
 
                 // ★2026-10-21 用户要求：可点区域 = **卡片本体**，不含下面那条名字带。
                 //   实测那块面板：本体 238px + 名字带 47px，多出来那一排以前被颜色键穿透盖住了，
                 //   整块吃鼠标之后就显出来了（用户报：「比他本体下面多了一排」）。
-                Rectangle tile = new Rectangle(x, y, tw, ContainerH);
+                Rectangle tile = new Rectangle(x, y, tw, tb.ContainerH);
                 if (tile.Contains(p) == false) continue;
 
                 index = i;
-                if (p.Y < y + ContainerH)
+                if (p.Y < y + tb.ContainerH)
                 {
                     int mx = p.X - x - MiniPad;
-                    int my = p.Y - y - MiniPad;
-                    int step = MiniBox + MiniGap;
+                    int my = p.Y - y - tb.PadY;
+                    int stepX = MiniBox + tb.GapXUsed;
+                    int stepY = MiniBox + MiniGap;
                     if (mx >= 0 && my >= 0)
                     {
-                        int ci = mx / step;
-                        int ri = my / step;
-                        if (ci < 3 && ri < 3)
+                        int ci = mx / stepX;
+                        int ri = my / stepY;
+                        if (ci < tb.Cols && ri < tb.Rows)
                         {
-                            int ox = mx - ci * step;
-                            int oy = my - ri * step;
+                            int ox = mx - ci * stepX;
+                            int oy = my - ri * stepY;
                             // 格子本身的宽度就是 MiniBox，MiniGap 那段是死区：
                             // 用 <= 会把缝隙算成左边那个图标，点缝隙就启动了旁边的应用
                             if (ox < MiniBox && oy < MiniBox)
                             {
-                                slot = ri * 3 + ci;
+                                slot = ri * tb.Cols + ci;
                                 return index;
                             }
                         }
@@ -1261,33 +1497,66 @@ namespace BreadLauncher
         ///   多出来那一排以前被颜色键穿透盖住了，整块吃鼠标之后才显出来）。
         /// 这一条现在是**死区**：不选中、不拖动、不弹菜单（见 OnMouseDown / OnMouseUp 的两处调用）。
         /// </summary>
+        /// <summary>
+        /// 某个文件夹「调大小」抓手的矩形（画的和命中共用同一份几何）：
+        /// 放在**名字带的右端** —— 那条原本就是死区（2026-10-21 用户要求「名字那一条不算可点区域」），
+        /// 放这儿既不挡图标，也不会让「点一下启动」被抢走。拖它 = 改 FolderScale（所有文件夹一起变）。
+        /// </summary>
+        private Rectangle TileGripRect(int groupIndex)
+        {
+            TileBox tb = BoxOf(groupIndex);
+            if (tb == null) return Rectangle.Empty;
+            int tw = tb.Tw;
+            int x = tb.Rect.X;
+            int y = _groupTop + tb.Rect.Y - _scrollY;
+            int w = Math.Max(Theme.Px(this, 16), Math.Min(Theme.Px(this, 24), tw / 5));
+            int bandTop = y + tb.ContainerH;
+            int gy2 = bandTop + (tb.NameH - w) / 2;
+            // 名字带比抓手还矮的时候（极端小档）就贴着名字带上沿放，别画到方格里去
+            if (gy2 < bandTop) gy2 = bandTop;
+            return new Rectangle(x + tw - w - Theme.Px(this, 2), gy2, w, w);
+        }
+
+        /// <summary>这个点是不是压在某组的大小抓手上（是就返回组号，否则 -1）。</summary>
+        private int TileGripHit(Point p)
+        {
+            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;
+            for (int i = 0; i < _groups.Count; i++)
+            {
+                Rectangle r = TileGripRect(i);
+                if (r.Width > 0 && r.Contains(p)) return i;
+            }
+            return -1;
+        }
+
         private bool InGroupNameBand(Point p)
         {
             if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return false;
-            int cols = Columns;
-            int tw = TileW;
-            for (int i = 0; i < _groups.Count; i++)
+            EnsureTiles();
+            for (int i = 0; i < _tiles.Count; i++)
             {
-                int r = i / cols;
-                int c = i % cols;
-                int x = _groupLeft + c * (tw + GapX);
-                int y = _groupTop + r * (TileH + GapY) - _scrollY;
-                if (p.X < x || p.X >= x + tw) continue;
-                if (p.Y >= y + ContainerH && p.Y < y + TileH) return true;
+                TileBox tb = _tiles[i];
+                int x = tb.Rect.X;
+                int y = _groupTop + tb.Rect.Y - _scrollY;
+                if (p.X < x || p.X >= x + tb.Tw) continue;
+                if (p.Y >= y + tb.ContainerH && p.Y < y + tb.ContainerH + tb.NameH) return true;
             }
             return false;
         }
 
         // ============================================================
-        // 分组内分页：一个文件夹最多 9 格，超过 9 个就分页（滚轮停在文件夹上 = 翻页）
+        // 分组内分页：一个文件夹一页放 Capacity 个（9 / 16 / 25，设置里可调），超了就分页
+        // （滚轮停在文件夹上 = 翻页）
         // ============================================================
         private readonly Dictionary<AppGroup, int> _page = new Dictionary<AppGroup, int>();
 
-        /// <summary>这组分几页（每页 9 格）；空组也算 1 页。</summary>
-        private static int PageCount(GroupView gv)
+        /// <summary>这组分几页（每页 Capacity 格）；空组也算 1 页。</summary>
+        private int PageCount(GroupView gv)
         {
             if (gv == null || gv.Apps.Count == 0) return 1;
-            return (gv.Apps.Count + FolderCapacity - 1) / FolderCapacity;
+            int cap = CapacityOf(gv);
+            if (cap < 1) cap = 1;
+            return (gv.Apps.Count + cap - 1) / cap;
         }
 
         /// <summary>当前页（0 起），永远夹在合法范围内。</summary>
@@ -1319,8 +1588,9 @@ namespace BreadLauncher
         private AppEntry AppAt(GroupView gv, int slot)
         {
             if (gv == null) return null;
-            if (slot < 0 || slot >= FolderCapacity) return null;
-            int idx = PageOf(gv) * FolderCapacity + slot;
+            int cap = CapacityOf(gv);
+            if (slot < 0 || slot >= cap) return null;
+            int idx = PageOf(gv) * cap + slot;
             if (idx < 0 || idx >= gv.Apps.Count) return null;
             return gv.Apps[idx];
         }
@@ -1336,13 +1606,13 @@ namespace BreadLauncher
         /// </summary>
         private Rectangle MiniCellRect(int groupIndex, int slot)
         {
-            int cols = Columns;
-            int tw = TileW;
-            int x = _groupLeft + (groupIndex % cols) * (tw + GapX);
-            int y = _groupTop + (groupIndex / cols) * (TileH + GapY) - _scrollY;
-            int mr = slot / 3, mc = slot % 3;
-            return new Rectangle(x + MiniPad + mc * (MiniBox + MiniGap),
-                                 y + MiniPad + mr * (MiniBox + MiniGap),
+            TileBox tb = BoxOf(groupIndex);
+            if (tb == null) return Rectangle.Empty;
+            int x = tb.Rect.X;
+            int y = _groupTop + tb.Rect.Y - _scrollY;
+            int mr = tb.Cols < 1 ? 0 : slot / tb.Cols, mc = tb.Cols < 1 ? 0 : slot % tb.Cols;
+            return new Rectangle(x + MiniPad + mc * (MiniBox + tb.GapXUsed),
+                                 y + tb.PadY + mr * (MiniBox + MiniGap),
                                  MiniBox, MiniBox);
         }
 
@@ -1359,9 +1629,10 @@ namespace BreadLauncher
             if (groupIndex < 0 || groupIndex >= _groups.Count) return -2;
             GroupView gv = _groups[groupIndex];
             int page = PageOf(gv);
-            int countOnPage = Math.Min(FolderCapacity, Math.Max(0, gv.Apps.Count - page * FolderCapacity));
+            int cap = CapacityOf(gv);
+            int countOnPage = Math.Min(cap, Math.Max(0, gv.Apps.Count - page * cap));
             if (countOnPage <= 0) return -1;
-            for (int slot = 0; slot < FolderCapacity; slot++)
+            for (int slot = 0; slot < cap; slot++)
             {
                 if (MiniCellRect(groupIndex, slot).Contains(p)) return slot;
             }
@@ -1383,7 +1654,8 @@ namespace BreadLauncher
             if (n < 2 || fromAbs < 0 || fromAbs >= n || toAbs < 0) return;
             // 落在**空格子**上 = 移到「本页末尾」（不是整组末尾）：先把落点夹到本页最后一格
             int page = PageOf(gv);
-            int pageEnd = Math.Min(n - 1, page * FolderCapacity + FolderCapacity - 1);
+            int capNow = CapacityOf(groupIndex);
+            int pageEnd = Math.Min(n - 1, page * capNow + capNow - 1);
             if (toAbs > pageEnd) toAbs = pageEnd;
             if (toAbs == fromAbs) return;
             AppEntry moved = gv.Apps[fromAbs];
@@ -1423,7 +1695,7 @@ namespace BreadLauncher
         /// <summary>数字键 1~9 快启：鼠标停在哪个文件夹上，就取那一页的第 n 个应用（没有就 null）。</summary>
         private AppEntry AppForDigit(int n)
         {
-            if (n < 1 || n > FolderCapacity) return null;
+            if (n < 1 || n > CapacityOf(_hoverGroup)) return null;
             if (_hoverGroup < 0 || _hoverGroup >= _groups.Count) return null;
             return AppAt(_groups[_hoverGroup], n - 1);
         }
@@ -1438,6 +1710,23 @@ namespace BreadLauncher
             {
                 _downPoint = e.Location;
                 _downValid = true;
+
+                // ★2026-11-23：名字带右端那道斜纹 = 拖拽调「文件夹大小」（一页放几个跟着变）。
+                //   必须排在「名字带是死区」之前判断，否则这块永远点不到。
+                int gHit = TileGripHit(e.Location);
+                if (gHit >= 0)
+                {
+                    _tileResizing = true;
+                    _tileResizeGroup = gHit;
+                    _tileResizeStart = PointToScreen(e.Location);
+                    _tileResizeStartSpan = SpanOf(_groups[gHit]);
+                    _downValid = false;
+                    BeginDrag();
+                    Capture = true;
+                    Cursor = Cursors.SizeWE;
+                    base.OnMouseDown(e);
+                    return;
+                }
 
                 // ★名字带是死区（用户 2026-10-21 要求：可点范围只认卡片本体）——
                 //   不往下走就不会变成「按住空白拖面板」，也不会选中文件夹。
@@ -1489,7 +1778,7 @@ namespace BreadLauncher
                         _iconDragFrom = slot;
                         _iconDragTo = slot;
                         _iconDragPage = PageOf(_groups[index]);
-                        _iconDragAbs = _iconDragPage * FolderCapacity + slot;
+                        _iconDragAbs = _iconDragPage * CapacityOf(index) + slot;
                     }
                     else
                     {
@@ -1517,21 +1806,58 @@ namespace BreadLauncher
         private int SlotIndexAt(Point p)
         {
             if (_groups.Count == 0) return -1;
-            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;   // ★半开区间：和 SetClip 的 [_groupTop, _groupTop+_groupHeight) 对齐（原来用 > 会多算最下面那一行，点得到但一个像素没画）
-            int cols = Columns;
-            int col = (p.X - _groupLeft + GapX / 2) / (TileW + GapX);
-            int row = (p.Y - _groupTop + _scrollY + GapY / 2) / (TileH + GapY);
-            if (col < 0) col = 0;
-            if (col >= cols) col = cols - 1;
-            if (row < 0) row = 0;
-            int idx = row * cols + col;
-            if (idx < 0) idx = 0;
-            if (idx >= _groups.Count) idx = _groups.Count - 1;
-            return idx;
+            if (p.Y < _groupTop || p.Y >= _groupTop + _groupHeight) return -1;   // ★半开区间：和 SetClip 对齐
+            EnsureTiles();
+            if (_tiles.Count == 0) return -1;
+            // ★先按「行」找（同一行的方块 y 相同），行内再按 x 取最近 —— 别用二维距离：
+            //   二维距离会把「下一行偏左的那张」判成更近，拖分组落点会跳行（探针里就撞到过）。
+            int rowFirst = -1;
+            long bestRowD = long.MaxValue;
+            for (int i = 0; i < _tiles.Count; i++)
+            {
+                int top = _groupTop + _tiles[i].Rect.Y - _scrollY;
+                int bottom = top + _tiles[i].Rect.Height;
+                long d;
+                if (p.Y < top) d = top - p.Y;
+                else if (p.Y >= bottom) d = p.Y - bottom + 1;
+                else d = 0;
+                if (d < bestRowD) { bestRowD = d; rowFirst = i; }
+                if (d == 0) break;      // 落在这一行里了，就停
+            }
+            if (rowFirst < 0) return 0;
+            int rowEnd = rowFirst;
+            while (rowEnd + 1 < _tiles.Count && _tiles[rowEnd + 1].Rect.Y == _tiles[rowFirst].Rect.Y) rowEnd++;
+            int best = rowFirst;
+            long bestDx = long.MaxValue;
+            for (int i = rowFirst; i <= rowEnd; i++)
+            {
+                int l = _tiles[i].Rect.Left, r = _tiles[i].Rect.Right;
+                long dx = p.X < l ? l - p.X : (p.X >= r ? p.X - r + 1 : 0);
+                if (dx < bestDx) { bestDx = dx; best = i; }
+                if (dx == 0) break;
+            }
+            if (best < 0) best = 0;
+            if (best >= _groups.Count) best = _groups.Count - 1;
+            return best;
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
+            // ★2026-11-23：正在拖「文件夹大小」抓手
+            if (_tileResizing)
+            {
+                Point nowScr2 = PointToScreen(e.Location);
+                // 只按**横向**位移算「跨了几列」：往右拖过半列就 +1 列，缩回来就 -1 列（整列吸附）
+                int dDelta = nowScr2.X - _tileResizeStart.X;
+                int unit = TileW + GapX;
+                int spanNow = _tileResizeStartSpan;
+                if (unit > 0) spanNow += (int)Math.Round((double)dDelta / unit);
+                if (_tileResizeGroup >= 0 && _tileResizeGroup < _groups.Count)
+                    SetGroupSpanLive(_groups[_tileResizeGroup], spanNow);
+                base.OnMouseMove(e);
+                return;
+            }
+
             // 缩放整个面板中
             if (_panelResizing)
             {
@@ -1606,10 +1932,8 @@ namespace BreadLauncher
                     _dragActive = true;
                 if (_dragActive)
                 {
-                    int ti, ts;
-                    GroupHitTest(e.Location, out ti, out ts);
-                    if (ti < 0) ti = SlotIndexAt(e.Location);   // 落在空白处也算一个落点
-                    _dragTo = ti;
+                    _dragTo = DropSlotToIndex(InsertSlotFor(e.Location, _dragFrom), _dragFrom);
+                    _dropLineX = DropLineX(e.Location, _dragFrom);   // 竖线提示：松手会插在哪儿
                     Cursor = Cursors.SizeAll;
                     Invalidate();
                     base.OnMouseMove(e);
@@ -1621,9 +1945,13 @@ namespace BreadLauncher
             GroupHitTest(e.Location, out index, out slot);
             bool gripHot = _gripHit.Width > 0 && _gripHit.Contains(e.Location);
             if (gripHot != _gripHot) { _gripHot = gripHot; Invalidate(); }
+            // ★文件夹大小抓手：压上去换成「斜着拉」的指针 + 亮起来（不亮的话没人知道这儿能拖）
+            int tgh = TileGripHit(e.Location);
+            if (tgh != _tileGripHover) { _tileGripHover = tgh; Invalidate(); }
             int zNow = ResizeZoneAt(e.Location);
             if (zNow != _hoverZone) { _hoverZone = zNow; Invalidate(); }   // 靠近边缘就高亮那条边
-            Cursor zoneCur = gripHot ? Cursors.SizeAll : ZoneCursor(zNow);
+            Cursor zoneCur = tgh >= 0 ? Cursors.SizeWE : (gripHot ? Cursors.SizeAll : ZoneCursor(zNow));
+
             if (index == _hoverGroup && slot == _hoverSlot)
             {
                 // ★悬停文件夹时**不再换手型**（2026-10-09 用户拍板：「就不能不改鼠标吗,不变就是了」）。
@@ -1646,6 +1974,26 @@ namespace BreadLauncher
             base.OnMouseMove(e);
         }
 
+        /// <summary>★丢了 MouseUp 也必须复位：Alt+Tab / UAC 安全桌面 / 截图工具抢焦点都会让窗口收到
+        /// WM_CAPTURECHANGED 而收不到 MouseUp。不复位的话 _tileResizing 永远为真 —— 之后鼠标一动就静默改列数，
+        /// 再点一下还会把改过的值落盘（Controls.cs 里滑块早写过同一套修法，MainForm 这边之前漏了）。
+        /// ⚠ 不要用 Control.MouseButtons 判按键：探针是合成事件，那个永远是「没按键」。</summary>
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (Capture) return;
+            bool lost = false;
+            if (_tileResizing) { _tileResizing = false; _tileResizeGroup = -1; lost = true; }
+            if (_panelMoving) { _panelMoving = false; lost = true; }
+            if (_panelResizing) { _panelResizing = false; lost = true; }
+            if (lost)
+            {
+                try { EndDrag(); } catch (Exception) { }
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+        }
+
         protected override void OnMouseLeave(EventArgs e)
         {
             _wheelAcc = 0;   // 鼠标离开窗口：翻页攒的零头一起丢掉（否则移回来接着攒，会莫名其妙多翻一页）
@@ -1655,6 +2003,7 @@ namespace BreadLauncher
             //   左边那条 2px 蓝线仍然 706/706 个像素通高亮着（探针里有回归断言钉着这条）。
             bool needRepaint = false;
             if (_hoverZone != 0) { _hoverZone = 0; needRepaint = true; }
+            if (_tileGripHover != -1) { _tileGripHover = -1; needRepaint = true; }   // 抓手高亮也要灭（同左边那条蓝线一个道理）
             if (_hoverGroup >= 0 || _hoverSlot >= -1)
             {
                 _hoverGroup = -1;
@@ -1669,6 +2018,19 @@ namespace BreadLauncher
         protected override void OnMouseUp(MouseEventArgs e)
         {
             try { Capture = false; } catch (Exception) { }
+
+            // ★2026-11-23：拖「文件夹大小」抓手结束 —— 大小已经在拖动过程中实时应用，这里只落盘
+            if (_tileResizing)
+            {
+                _tileResizing = false;
+                _downValid = false;
+                EndDrag();
+                _tileResizeGroup = -1;
+                PersistSettings();
+                Cursor = Cursors.Default;
+                Invalidate();
+                return;
+            }
 
             // 面板缩放结束
             if (_panelResizing)
@@ -1711,7 +2073,7 @@ namespace BreadLauncher
                 _dragActive = false;
                 int ig = _iconDragGroup, iabs = _iconDragAbs, ito = _iconDragTo;
                 GroupView gvDrop = (ig >= 0 && ig < _groups.Count) ? _groups[ig] : null;
-                int toAbs = (gvDrop != null && ito >= 0) ? PageOf(gvDrop) * FolderCapacity + ito : -1;
+                int toAbs = (gvDrop != null && ito >= 0) ? PageOf(gvDrop) * CapacityOf(gvDrop) + ito : -1;
                 _iconDragGroup = -1; _iconDragFrom = -1; _iconDragTo = -1;
                 _iconDragAbs = -1; _iconDragPage = -1;
                 if (iconWasDragging)
@@ -1730,10 +2092,7 @@ namespace BreadLauncher
                 int from = _dragFrom;
                 // ★2026-10-25：落点按**松手这一刻**的位置重算 —— 拖动中滚轮滚了一行的话，旧的 _dragTo
                 //   已经滚到别的组上（用户实测「搬完发现位置不对」，而且落点高亮早滚出屏幕了）。
-                int tiNow, tsNow;
-                GroupHitTest(e.Location, out tiNow, out tsNow);
-                int to = tiNow >= 0 ? tiNow : SlotIndexAt(e.Location);
-                if (to < 0) to = _dragTo;
+                int to = DropSlotToIndex(InsertSlotFor(e.Location, _dragFrom), _dragFrom);
                 _dragActive = false;
                 _downValid = false;            // ★同上
                 _dragFrom = -1;
@@ -2207,6 +2566,7 @@ namespace BreadLauncher
         private void RefreshContent()
         {
             BuildGroupViews();
+            _layoutDirty = true;   // 组的内容变了 → 重新排布
             _scrollY = 0;
             _hoverGroup = -1;
             _hoverSlot = -2;
@@ -2217,7 +2577,7 @@ namespace BreadLauncher
 
             ApplyPanelHeight();
             LayoutUi();
-            Invalidate(true);
+            Invalidate();       // ★别用 Invalidate(true)：分层窗口不合成子控件，底栏按钮那三次 WM_PAINT 是白画（OnResize 里早踩过这个坑）
         }
 
         private void RequestIcon(AppEntry en, int size)
@@ -2311,6 +2671,78 @@ namespace BreadLauncher
         }
 
         /// <summary>拖动落点：把第 from 个分组挪到第 to 个位置（其余顺延），并落盘。</summary>
+        /// <summary>
+        /// 拖分组时的**插入位置**（0..组数）。★2026-11-26 用户报：「2 列（18 格）文件夹右边总会空出一个位置，
+        /// 想把别的文件夹补过去，结果补到别的地方去了」—— 根因是以前按「离哪张卡最近」算落点，
+        /// 空位那里根本没有卡，于是被判到别的行/别的卡。现在改成按「在哪一行、在行内第几张之后」算，
+        /// 落在缝里、落在空位里都能正确插进那个位置。
+        /// </summary>
+        private int DropSlotAt(Point p)
+        {
+            EnsureTiles();
+            int n = _groups == null ? 0 : _groups.Count;
+            if (_tiles.Count == 0 || n == 0) return 0;
+            int rowFirst = -1, rowEnd = -1;
+            int bestD = int.MaxValue;
+            for (int i = 0; i < _tiles.Count; )
+            {
+                int top = _groupTop + _tiles[i].Rect.Y - _scrollY;
+                int bottom = top + _tiles[i].Rect.Height;
+                int j = i;
+                while (j + 1 < _tiles.Count && _tiles[j + 1].Rect.Y == _tiles[i].Rect.Y) j++;
+                int d = (p.Y >= top && p.Y < bottom) ? 0 : (p.Y < top ? top - p.Y : p.Y - bottom + 1);
+                if (d < bestD) { bestD = d; rowFirst = i; rowEnd = j; }
+                if (d == 0) break;
+                i = j + 1;
+            }
+            if (rowFirst < 0) return 0;
+            // 行内：数一下有几张卡的中线在指针左边 → 插在它们后面
+            int ins = rowFirst;
+            for (int i = rowFirst; i <= rowEnd; i++)
+                if (p.X >= _tiles[i].Rect.Left + _tiles[i].Rect.Width / 2) ins = i + 1;
+            if (p.Y > _groupTop + _tiles[_tiles.Count - 1].Rect.Y - _scrollY + _tiles[_tiles.Count - 1].Rect.Height)
+                ins = n;    // 比最后一行还低 = 放到末尾
+            if (ins < 0) ins = 0;
+            if (ins > n) ins = n;
+            return ins;
+        }
+
+        /// <summary>拖分组时「指针在哪张卡上 / 在哪个空位里」→ 插入位置（0..组数）。
+        /// ★两种情形必须用**同一套语义**（上次就是把两套混用，才把普通换位弄坏的）：
+        ///   落在某张卡 hi 上 = 「插到那张卡的后面」（等价于老行为 to = hi）；
+        ///   落在空位/缝里 = DropSlotAt 直接数出来的位置。</summary>
+        private int InsertSlotFor(Point p, int from)
+        {
+            int hi, hs;
+            GroupHitTest(p, out hi, out hs);
+            if (hi >= 0) return hi >= from ? hi + 1 : hi;
+            return DropSlotAt(p);
+        }
+
+        /// <summary>拖动时那根「会插在这儿」的竖线 x 坐标（客户区）。返回 0 = 不画。</summary>
+        private int DropLineX(Point p, int from)
+        {
+            EnsureTiles();
+            if (_tiles.Count == 0) return 0;
+            int ins = InsertSlotFor(p, from);
+            int idx = ins >= _tiles.Count ? _tiles.Count - 1 : ins;
+            TileBox b = _tiles[idx];
+            bool after = (ins >= _tiles.Count) || (idx < _tiles.Count && ins == idx && p.X > b.Rect.Left + b.Rect.Width / 2);
+            int x = after ? b.Rect.Right + GapX / 2 : b.Rect.Left - GapX / 2;
+            if (x < PadOuter / 2) x = PadOuter / 2;
+            return x;
+        }
+
+        /// <summary>把「插入位置」换算成 MoveGroupTo 要的下标（移动后下标会左移一位）。</summary>
+        private int DropSlotToIndex(int ins, int from)
+        {
+            int to = ins;
+            if (to > from) to--;
+            if (to < 0) to = 0;
+            if (to > _settings.Groups.Count - 1) to = _settings.Groups.Count - 1;
+            return to;
+        }
+
         private void MoveGroupTo(int from, int to)
         {
             if (from < 0 || to < 0) return;
@@ -2322,15 +2754,48 @@ namespace BreadLauncher
             SaveGroups();
         }
 
-        /// <summary>文件夹大小（百分比）：85 小 / 100 标准 / 120 大。</summary>
-        private void SetFolderScale(int percent)
+        /// <summary>★2026-11-23：把**指定那一个**文件夹改成「占几列」（1/2/3）。图标尺寸固定不变。
+        /// persist=false 是拖动过程中用的（每动一下都落盘会把文件写几百次）。</summary>
+        private void SetGroupSpan(GroupView gv, int span, bool persist)
         {
-            if (percent < 60) percent = 60;
-            if (percent > 200) percent = 200;
-            if (_settings.FolderScale == percent) return;
-            _settings.FolderScale = percent;
-            PersistSettings();
+            if (gv == null || gv.Group == null) return;
+            // ★只夹物理档位 1..3；「窗口现在放不放得下」只影响**画出来**（SpanOf 里再夹 MaxSpan），
+            //   绝不能写回配置 —— 否则面板一窄，用户拖一下就把存好的 3 列永久压成 2 列。
+            if (span < 1) span = 1;
+            if (span > 3) span = 3;
+            int old = gv.Group.Span <= 0 ? 1 : gv.Group.Span;
+            if (old == span) return;
+            gv.Group.Span = span;
+            _page.Remove(gv.Group);        // 一页能放几格变了 → 页码没意义
+            _layoutDirty = true;
+            if (persist) PersistSettings();
             RefreshContent();
+        }
+
+        /// <summary>拖动中用的轻量版：只改列数 + 标脏 + 重画一帧。
+        /// ★不要走 SetGroupSpan()：那条会 RefreshContent()（重建分组视图 + 逐个 RequestIcon），
+        ///   每移动 1px 做一遍的话，110 个应用的组会明显卡手。</summary>
+        private void SetGroupSpanLive(GroupView gv, int span)
+        {
+            if (gv == null || gv.Group == null) return;
+            // ★只夹物理档位 1..3；「窗口现在放不放得下」只影响**画出来**（SpanOf 里再夹 MaxSpan），
+            //   绝不能写回配置 —— 否则面板一窄，用户拖一下就把存好的 3 列永久压成 2 列。
+            if (span < 1) span = 1;
+            if (span > 3) span = 3;
+            int old = gv.Group.Span <= 0 ? 1 : gv.Group.Span;
+            if (old == span) return;
+            gv.Group.Span = span;
+            _page.Remove(gv.Group);
+            _layoutDirty = true;
+            Invalidate();
+        }
+
+        /// <summary>某个列数下，一页能放几个（菜单文案用）。</summary>
+        private int CapacityForSpan(int span)
+        {
+            int tw, ch, nh, cols, rows;
+            BoxMetrics(span, out tw, out ch, out nh, out cols, out rows);
+            return cols * rows;
         }
 
         private int GroupIndexOf(GroupView gv)
@@ -2843,6 +3308,19 @@ namespace BreadLauncher
             if (gv.Apps.Count > 0)
                 menu.Items.Add("查看全部（" + gv.Apps.Count + "）…", null, delegate { ShowAllApps(g); });
             menu.Items.Add("重命名分组…", null, delegate { RenameGroup(g); });
+            {
+                // ★2026-11-23：大小是**这一个文件夹**的（拖名字右边那道斜纹也是改它自己）
+                ToolStripMenuItem scaleItem = new ToolStripMenuItem("文件夹大小（这个文件夹）");
+                int curSpan = SpanOf(gv);
+                for (int sp2 = 1; sp2 <= MaxSpan; sp2++)
+                {
+                    int capSp = CapacityForSpan(sp2);
+                    GroupView gg = g;
+                    scaleItem.DropDownItems.Add(sp2 + " 列（一页 " + capSp + " 个）" + (sp2 == curSpan ? "（当前）" : ""),
+                        null, delegate { SetGroupSpan(gg, sp2, true); });
+                }
+                menu.Items.Add(scaleItem);
+            }
             menu.Items.Add("左移一位", null, delegate { MoveGroup(g, -1); });
             menu.Items.Add("右移一位", null, delegate { MoveGroup(g, 1); });
             menu.Items.Add("删除分组", null, delegate { DeleteGroup(g); });   // 里面自带确认框
@@ -2991,17 +3469,9 @@ namespace BreadLauncher
             menu.Items.Add(ToggleItem("启动应用后关闭面板", _settings.CloseAfterLaunch, delegate { ToggleCloseAfterLaunch(); }));
 
 
-            ToolStripMenuItem sizeMenu = new ToolStripMenuItem("文件夹大小");
-            int curScale = _settings.FolderScale <= 0 ? 100 : _settings.FolderScale;
-            string[] scaleNames = new string[] { "小", "标准", "大" };
-            int[] scaleVals = new int[] { 85, 100, 120 };
-            for (int si = 0; si < scaleVals.Length; si++)
-            {
-                int sv = scaleVals[si];
-                sizeMenu.DropDownItems.Add(scaleNames[si] + (sv == curScale ? "（当前）" : ""), null,
-                    delegate { SetFolderScale(sv); });
-            }
-            menu.Items.Add(sizeMenu);
+            // ★2026-11-23：**「文件夹大小」和「一页放几个」都不在设置里了** ——
+            //   用户拍板：大小是**每个文件夹各自**的（拖哪个只改哪个），所以入口挪到
+            //   「右键某个文件夹 → 文件夹大小」，设置菜单里留全局默认没意义。
 
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("清除图标缓存", null, delegate { ClearIcons(); });
@@ -3102,7 +3572,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.32\n\n" +
+                    "BreadLauncher 1.33\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

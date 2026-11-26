@@ -13,6 +13,10 @@ namespace BreadLauncher
     {
         public string Name;
         public List<string> Keys;
+        /// <summary>★2026-11-23：这个文件夹**自己**的大小（百分比）。
+        /// 0 = 跟全局默认（`Settings.FolderScale`）。用户要求「调这个肯定是单个大小调整」——
+        /// 拖某个文件夹名字右边的斜纹只改它自己，不影响别的文件夹。</summary>
+        public int Span;
 
         public AppGroup()
         {

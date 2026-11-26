@@ -100,6 +100,21 @@ namespace BreadLauncher
             f.Show();
             Application.DoEvents();
 
+            // ★2026-11-23：用户可能把某个文件夹拖成 2/3 列存进配置了，而下面一大段老断言都假设
+            //   「标准 1 列网格」（第 9 格、每页 9 个、数字键 1~9…）。这里在**内存里**先统一成 1 列
+            //   （PreviewMode 不落盘），让老断言保持可比；2/3 列的行为由末尾「每个文件夹各自占几列」那段专门验。
+            try
+            {
+                Settings normSet = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                if (normSet != null)
+                {
+                    for (int ni = 0; ni < normSet.Groups.Count; ni++) normSet.Groups[ni].Span = 0;
+                    typeof(MainForm).GetMethod("InvalidateTiles", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, null);
+                    Application.DoEvents();
+                }
+            }
+            catch (Exception) { }
+
             int cols = (int)Prop(f, "Columns");
             int tw = (int)Prop(f, "TileW");
             int tileH = (int)Prop(f, "TileH");
@@ -151,7 +166,7 @@ namespace BreadLauncher
             Say("目标分组：「" + gv.Name + "」 可显示条目=" + gv.Apps.Count);
 
             MethodInfo realMini = typeof(MainForm).GetMethod("IsRealMiniSlot", BindingFlags.NonPublic | BindingFlags.Instance);
-            MethodInfo pageCountM = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Static);
+            MethodInfo pageCountM = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Instance);
             MethodInfo pageOfM = typeof(MainForm).GetMethod("PageOf", BindingFlags.NonPublic | BindingFlags.Instance);
             MethodInfo setPageM = typeof(MainForm).GetMethod("SetPage", BindingFlags.NonPublic | BindingFlags.Instance);
             MethodInfo appAtM = typeof(MainForm).GetMethod("AppAt", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -160,13 +175,13 @@ namespace BreadLauncher
             {
                 // 边界：正好 9 个 = 一页装满，第 9 格就是第 9 个应用本身
                 bool isReal9 = (bool)realMini.Invoke(f, new object[] { gv, 8 });
-                int pc = (int)pageCountM.Invoke(null, new object[] { gv });
+                int pc = (int)pageCountM.Invoke(f, new object[] { gv });
                 Check(isReal9 && pc == 1,
                     "正好 9 个：第 9 格可点启动=" + isReal9 + "，页数=" + pc + "（期望 True / 1，不出现「+0」）");
             }
             else if (gv.Apps.Count > 9)
             {
-                int pc = (int)pageCountM.Invoke(null, new object[] { gv });
+                int pc = (int)pageCountM.Invoke(f, new object[] { gv });
                 int expectPages = (gv.Apps.Count + FolderCap - 1) / FolderCap;
                 Check(pc == expectPages, "分页：这组 " + gv.Apps.Count + " 个 → " + pc + " 页（期望 " + expectPages + "）");
 
@@ -388,8 +403,8 @@ namespace BreadLauncher
                         MethodInfo mmU = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
                         MethodInfo cellR = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
                         MethodInfo pageOfR = typeof(MainForm).GetMethod("PageOf", BindingFlags.NonPublic | BindingFlags.Instance);
-                        MethodInfo pageCountR = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Static);
-                        int pcX = (int)pageCountR.Invoke(null, new object[] { gvX });
+                        MethodInfo pageCountR = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Instance);
+                        int pcX = (int)pageCountR.Invoke(f, new object[] { gvX });
                         setPageM.Invoke(f, new object[] { gvX, 0 });
                         Rectangle r5 = (Rectangle)cellR.Invoke(f, new object[] { gx2, 5 });
                         Rectangle r0x = (Rectangle)cellR.Invoke(f, new object[] { gx2, 0 });
@@ -437,7 +452,7 @@ namespace BreadLauncher
                     FieldInfo movingF = typeof(MainForm).GetField("_panelMoving", BindingFlags.NonPublic | BindingFlags.Instance);
                     MethodInfo mmDown2 = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
                     MethodInfo mmUp2 = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
-                    int pcNow = (int)pageCountM.Invoke(null, new object[] { gv });
+                    int pcNow = (int)pageCountM.Invoke(f, new object[] { gv });
                     setPageM.Invoke(f, new object[] { gv, pcNow - 1 });
                     int onLastPage = gv.Apps.Count - (pcNow - 1) * 9;
                     if (onLastPage > 0 && onLastPage < 9)
@@ -797,7 +812,7 @@ namespace BreadLauncher
                                 while (swA.ElapsedMilliseconds < 400) { Application.DoEvents(); System.Threading.Thread.Sleep(10); }
                                 int off1 = (int)offF.GetValue(lst);
                                 mu.Invoke(lst, new object[] { new MouseEventArgs(MouseButtons.Left, 1, lst.ClientSize.Width / 2, bandBottomY, 0) });
-                                CheckIf(listScrolls, "列表没超出可视区（候选太少），本来就滚不动",
+                                CheckIf(lst.ContentHeight > lst.Height, "列表没超出可视区（候选太少），本来就滚不动",
                                     off1 > off0, "贴边 400ms 内真的滚动了（_offset " + off0 + " → " + off1 + "）");
                                 lst.UncheckAll();
                             }
@@ -837,14 +852,14 @@ namespace BreadLauncher
                                 // ★2026-11-06：期望值要跟「列表实际能滚多远」取小 —— 列表只比可视区高一点时，
                                 //   滚轮会被夹到最大值（实测用户配置只多 28px），这不是回归，是前提不同。
                                 int expectOne = Math.Min(rowPitch * 3, Math.Max(0, lst.ContentHeight - lst.Height));
-                                CheckIf(listScrolls, "列表没超出可视区（候选太少），本来就滚不动",
+                                CheckIf(lst.ContentHeight > lst.Height, "列表没超出可视区（候选太少），本来就滚不动",
                                     offOne == expectOne,
                                     "列表滚轮一格 = 3 行（行距 " + rowPitch + "）→ _offset = " + offOne
                                     + "（期望 " + expectOne + "；以前是直接拿 Delta 当像素用的 120）");
                                 WheelList(lst, -40);
                                 int offFine = (int)offF2.GetValue(lst);
                                 int expectFine = Math.Min(rowPitch, Math.Max(0, lst.ContentHeight - lst.Height) - offOne);
-                                CheckIf(listScrolls, "列表没超出可视区（候选太少），本来就滚不动",
+                                CheckIf(lst.ContentHeight > lst.Height, "列表没超出可视区（候选太少），本来就滚不动",
                                     offFine - offOne == expectFine,
                                     "碎 Delta（高精度滚轮/触控板送 40）按比例缩 → 正好一行 " + (offFine - offOne)
                                     + "px（期望 " + expectFine + "；以前只滚 40px，几乎看不出动）");
@@ -869,7 +884,7 @@ namespace BreadLauncher
                                 md4.Invoke(lst, new object[] { new MouseEventArgs(MouseButtons.Left, 1, hitL + Theme.Px(lst, 1), rowY, 0) });
                                 mu4.Invoke(lst, new object[] { new MouseEventArgs(MouseButtons.Left, 1, hitL + Theme.Px(lst, 1), rowY, 0) });
                                 int onBar = lst.Checked.Count;
-                                CheckIf(listScrolls, "列表没超出可视区，那一竖条根本不是滚动条，测不出「抢不抢点击」",
+                                CheckIf(lst.ContentHeight > lst.Height, "列表没超出可视区，那一竖条根本不是滚动条，测不出「抢不抢点击」",
                                     clickedRow == 1 && onBar == 0,
                                     "滚动条命中区（左界 x=" + hitL + "，客户区宽 " + lst.ClientSize.Width + "）不抢行点击：区内点 → 打钩 "
                                     + onBar + " 个（应为 0），行内 x=" + inRowX + " 点 → " + clickedRow + " 个（应为 1）");
@@ -957,7 +972,7 @@ namespace BreadLauncher
                                 listGeom[0] = lst.DeviceDpi;
                                 listGeom[1] = Theme.Scroll.InkPx(lst);
                                 listGeom[2] = Theme.Scroll.MarginPx(lst);
-                                CheckIf(listScrolls, "列表没超出可视区，根本不会画滚动条",
+                                CheckIf(lst.ContentHeight > lst.Height, "列表没超出可视区，根本不会画滚动条",
                                     bb.IsEmpty == false && Math.Abs(bb.Left - exp.X) <= 1 && Math.Abs(bb.Width - exp.Width) <= 1
                                       && Math.Abs(bb.Top - exp.Y) <= 1,
                                     "列表滚动条真画在 Theme.Scroll.BarRect 指定的位置：实测 " + bb.X + "," + bb.Y + " " + bb.Width + "x" + bb.Height
@@ -1559,11 +1574,11 @@ namespace BreadLauncher
                 List<GroupView> gs2 = (List<GroupView>)Field(f, "_groups");
                 int multi = -1;
                 for (int i = 0; i < gs2.Count; i++)
-                    if ((int)pageCountM.Invoke(null, new object[] { gs2[i] }) > 1) { multi = i; break; }
+                    if ((int)pageCountM.Invoke(f, new object[] { gs2[i] }) > 1) { multi = i; break; }
                 if (multi >= 0)
                 {
                     GroupView gv2 = gs2[multi];
-                    int pc2 = (int)pageCountM.Invoke(null, new object[] { gv2 });
+                    int pc2 = (int)pageCountM.Invoke(f, new object[] { gv2 });
                     setPageM.Invoke(f, new object[] { gv2, pc2 - 1 });       // 翻到最后一页
                     typeof(MainForm).GetField("_hoverGroup", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, multi);
                     SetScroll(f, 0);
@@ -2505,7 +2520,10 @@ namespace BreadLauncher
                     bool sawDont = false, sawDefault = false, sawBig = false;
                     StringBuilder nmLog = new StringBuilder();
                     string tmpCfg = Path.Combine(Program.AppDir, "probe-namelabel.json");
-                    int[] scales = new int[] { 85, 100, 120 };
+                    // ★2026-11-23 改口径：图标尺寸固定之后，格子永远是同一个大小（MiniBox 只跟 DPI 走），
+                    //   所以「文件夹大小」不再影响格子 —— 三档都应该画得出名字。
+                    //   而「格子小到放不下名字时宁可不画」这条规矩还得在，改为**直接喂一个小格子**问算法。
+                    int[] scales = new int[] { 118, 150, 196 };
                     for (int si = 0; si < scales.Length; si++)
                     {
                         int sc = scales[si];
@@ -2532,9 +2550,8 @@ namespace BreadLauncher
                             Rectangle inn = (Rectangle)a[6];
                             nmLog.Append("      FolderScale=").Append(sc).Append("  格 ").Append(box).Append("px → ")
                                  .Append(drew ? "画（图标区 " + inn.Height + "px）" : "不画").AppendLine();
-                            if (sc == 85 && !drew) sawDont = true;
-                            if (sc == 100 && drew) sawDefault = true;
-                            if (sc == 120 && drew) sawBig = true;
+                            if (drew) sawDefault = true;
+                            if (sc == 196 && drew) sawBig = true;
                         }
                         finally
                         {
@@ -2543,9 +2560,12 @@ namespace BreadLauncher
                     }
                     nmSet.FolderScale = oldScale;
                     Say(nmLog.ToString().TrimEnd());
-                    Check(sawDont, "FolderScale 85（格子最小）：**不画**名字，把整格高度留给图标（不然图标只剩 14px 认不出）");
-                    Check(sawDefault, "★FolderScale 100（**默认档**）：名字照样画得出来 —— 这条是「默认档功能静默失效」那次的回归测试");
-                    Check(sawBig, "FolderScale 120：名字照样画得出来");
+                    Check(sawDefault, "★不管文件夹多大，格子（MiniBox）都是同一个大小 → 名字照样画得出来（三档全画）");
+                    Check(sawBig, "文件夹拉到最大档（196%）名字也照画");
+                    Rectangle nmSmall = new Rectangle(0, 0, Theme.Px(f, 24), Theme.Px(f, 24));
+                    object[] nmArgsS = new object[] { nmSmall, nmGap, (int)Prop(f, "TileW"), (int)Prop(f, "TileH"), 0, 0, Rectangle.Empty, Rectangle.Empty };
+                    bool nmDrewSmall = (bool)mLayout.Invoke(f, nmArgsS);
+                    Check(nmDrewSmall == false, "格子只有 " + Theme.Px(f, 24) + "px 时**不画**名字（宁可没名字也要保住图标；这条规矩没被改掉）");
 
                     // 格子足够大时必须照画（别把功能一刀砍掉）
                     Rectangle nmBig = new Rectangle(0, 0, Theme.Px(f, 120), Theme.Px(f, 120));
@@ -2823,8 +2843,16 @@ namespace BreadLauncher
                     {
                         SetScroll(f, 0);
                         int leftD = (int)Field(f, "_groupLeft"), topD = (int)Field(f, "_groupTop");
-                        Point pd = new Point(leftD + Theme.Px(f, 4), topD + Theme.Px(f, 4));               // 第 1 张卡片的留白处
-                        Point p1d = new Point(leftD + (twD + gxD) + twD / 2, topD + thD / 2);               // 第 2 张卡片中心
+                        Point pd, p1d;
+                        {
+                            // ★按**真实卡片矩形**取点：前面若是 2/3 列的文件夹，均匀网格推算的坐标会落在别的卡上
+                            System.Collections.IList tlP = (System.Collections.IList)Field(f, "_tiles");
+                            object it0p = tlP[0], it1p = tlP[1];
+                            Rectangle r0p = (Rectangle)it0p.GetType().GetField("Rect").GetValue(it0p);
+                            Rectangle r1p = (Rectangle)it1p.GetType().GetField("Rect").GetValue(it1p);
+                            pd = new Point(r0p.X + Theme.Px(f, 4), topD + r0p.Y + Theme.Px(f, 4));
+                            p1d = new Point(r1p.X + r1p.Width / 2, topD + r1p.Y + r1p.Height / 2);
+                        }
                         MethodInfo mmDn = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
                         MethodInfo mmMv = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
                         MethodInfo mmUp2 = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -2835,12 +2863,26 @@ namespace BreadLauncher
                         int scrollBefore = (int)Field(f, "_scrollY");
                         Wheel(f, -120);                                          // 滚一整行：指针下面换成别的组了
                         int scrollAfter = (int)Field(f, "_scrollY");
+                        // ★期望落点必须在**松手之前**算（松手会真的重排，之后再算就是按新布局算的，永远对不上）
+                        int expect = -1;
+                        {
+                            System.Collections.IList tlE = (System.Collections.IList)Field(f, "_tiles");
+                            int gTopE = (int)Field(f, "_groupTop");
+                            int scrE = (int)Field(f, "_scrollY");
+                            for (int q = 0; tlE != null && q < tlE.Count; q++)
+                            {
+                                object itE = tlE[q];
+                                Rectangle rE = (Rectangle)itE.GetType().GetField("Rect").GetValue(itE);
+                                rE.Y = gTopE + rE.Y - scrE;
+                                if (rE.Contains(p1d)) { expect = q; break; }
+                            }
+                        }
                         mmUp2.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, p1d.X, p1d.Y, 0) });
                         Settings stD = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
                         int landed = -1;
                         for (int k = 0; k < stD.Groups.Count; k++) if (stD.Groups[k].Name == movedName) { landed = k; break; }
-                        int expect = Math.Min(1 + colsD, stD.Groups.Count - 1);
-                        Check(scrollAfter > scrollBefore && landed == expect,
+                        CheckIf(scrollAfter > scrollBefore, "这份配置滚不动（内容没超出分组区 / MaxScroll=0），测不了「滚一行之后落点重算」",
+                            landed == expect,
                             "拖分组时滚了一行 → 松手按「鼠标下面那张卡片」落（滚前 " + scrollBefore + " → 滚后 " + scrollAfter
                             + "；「" + movedName + "」落在第 " + (landed + 1) + " 位，期望第 " + (expect + 1)
                             + " 位 = 滚完指针下的「" + underName + "」那一格）；旧写法会落回第 1 位");
@@ -2903,9 +2945,209 @@ namespace BreadLauncher
             }
             catch (Exception exAdmin) { Check(false, "「按应用提权」断言异常：" + exAdmin.Message); }
 
+            // ---------- 2026-11-23 「文件夹大小」：每个文件夹**各自**占几列 + 拖名字右边斜纹 ----------
+            // ★用户原话：「一面 9 个也太少了」「图标就是原来那个大小，不然看不清」「调这个肯定是单个大小调整啊」
+            //   「有点乱七八糟，你有更好的方案吗」→ 第二版：**高度统一、只有宽度按整列变**（1/2/3 列），
+            //   所以每一行都齐、名字都在一条线上。这里钉四件事：
+            //   ①图标尺寸不随文件夹变宽而缩；②只改被设置的那一个（别的组一格不动）；③拖它的抓手只改它；
+            //   ④右键菜单里有这一项。
+            try
+            {
+                MethodInfo ctCell = typeof(MainForm).GetMethod("MiniCellRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctHit = typeof(MainForm).GetMethod("GroupHitTest", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctPageCount = typeof(MainForm).GetMethod("PageCount", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctCapOf = typeof(MainForm).GetMethod("CapacityOf", BindingFlags.NonPublic | BindingFlags.Instance, null, new Type[] { typeof(GroupView) }, null);
+                MethodInfo ctSpanOf = typeof(MainForm).GetMethod("SpanOf", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctCapForSpan = typeof(MainForm).GetMethod("CapacityForSpan", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctSetSpan = typeof(MainForm).GetMethod("SetGroupSpan", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctGrip = typeof(MainForm).GetMethod("TileGripRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctDown = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctMove = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo ctUp = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                List<GroupView> ctGroups = (List<GroupView>)Field(f, "_groups");
+
+                if (ctGroups.Count < 2 || ctSetSpan == null || ctCapOf == null)
+                    NoteSkip("组少于 2 个（或找不到按文件夹设列数的方法），测不了「单个文件夹各自大小」");
+                else
+                {
+                    GroupView cg0 = ctGroups[0];
+                    GroupView cg1 = ctGroups[1];
+                    int cap1Before = (int)ctCapOf.Invoke(f, new object[] { cg1 });
+                    int iconBefore = (int)Prop(f, "MiniIconSize");
+                    int maxSpan = (int)Prop(f, "MaxSpan");
+
+                    string ctLog = "";
+                    bool soloOk = true, iconOk = true, gridOk = true;
+                    for (int sp = 1; sp <= maxSpan; sp++)
+                    {
+                        ctSetSpan.Invoke(f, new object[] { cg0, sp, false });
+                        int capNow = (int)ctCapOf.Invoke(f, new object[] { cg0 });
+                        int capWant = (int)ctCapForSpan.Invoke(f, new object[] { sp });
+                        int cap1Now = (int)ctCapOf.Invoke(f, new object[] { cg1 });
+                        int iconNow = (int)Prop(f, "MiniIconSize");
+                        if (capNow != capWant) soloOk = false;
+                        if (cap1Now != cap1Before) soloOk = false;      // ★别的文件夹不许跟着变
+                        if (iconNow != iconBefore) iconOk = false;
+                        // 最后一格的右/下边必须还在方块里，并且点它能命中
+                        Rectangle cLast = (Rectangle)ctCell.Invoke(f, new object[] { 0, capNow - 1 });
+                        object[] hArgs = new object[] { new Point(cLast.X + cLast.Width / 2, cLast.Y + cLast.Height / 2), 0, 0 };
+                        ctHit.Invoke(f, hArgs);
+                        if ((int)hArgs[1] != 0 || (int)hArgs[2] != capNow - 1) gridOk = false;
+                        int pcs = (int)ctPageCount.Invoke(f, new object[] { cg0 });
+                        int wants = cg0.Apps.Count <= 0 ? 1 : (cg0.Apps.Count + capNow - 1) / capNow;
+                        if (pcs != wants) gridOk = false;
+                        ctLog += sp + " 列 = 一页 " + capNow + " 个（" + pcs + " 页）；";
+                    }
+                    Check(soloOk && iconOk && gridOk,
+                        "每个文件夹**各自**占几列：给「" + cg0.Name + "」改成 1/2/3 列 → 只有它变、" + cg1.Name
+                        + " 一直 " + cap1Before + " 个/页；图标一直 " + iconBefore + "px；最后一格点得到、页数对（实测 " + ctLog + "）");
+
+                    // 拖它的斜纹 → 只改它，而且是**整列吸附**
+                    ctSetSpan.Invoke(f, new object[] { cg0, 1, false });
+                    int cap0A = (int)ctCapOf.Invoke(f, new object[] { cg0 });
+                    int cap1A = (int)ctCapOf.Invoke(f, new object[] { cg1 });
+                    Rectangle gripR = (Rectangle)ctGrip.Invoke(f, new object[] { 0 });
+                    bool gripOk = gripR.Width > 0 && gripR.Height > 0;
+                    if (gripOk)
+                    {
+                        Point gripPt = new Point(gripR.X + gripR.Width / 2, gripR.Y + gripR.Height / 2);
+                        ctMove.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.None, 0, gripPt.X, gripPt.Y, 0) });
+                        ctDown.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, gripPt.X, gripPt.Y, 0) });
+                        int dragUnit = (int)Prop(f, "TileW") + (int)Prop(f, "GapX");
+                        ctMove.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, gripPt.X + dragUnit, gripPt.Y, 0) });
+                        ctUp.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, gripPt.X + dragUnit, gripPt.Y, 0) });
+                    }
+                    int cap0B = (int)ctCapOf.Invoke(f, new object[] { cg0 });
+                    int cap1B = (int)ctCapOf.Invoke(f, new object[] { cg1 });
+                    int iconB = (int)Prop(f, "MiniIconSize");
+                    Check(gripOk && cap0B > cap0A && cap1B == cap1A && iconB == iconBefore,
+                        "往右拖「" + cg0.Name + "」名字右边的斜纹：它自己多占一列（" + cap0A + " → " + cap0B + " 个/页），"
+                        + "「" + cg1.Name + "」一点没动（" + cap1A + " → " + cap1B + "），图标还是 " + iconB + "px"
+                        + (gripOk ? "" : "（抓手没找到！）"));
+
+                    // ★「不乱七八糟」的判据：所有文件夹方块**高度必须一模一样**（只有宽度按列变）
+                    System.Collections.IList tl2 = (System.Collections.IList)Field(f, "_tiles");
+                    int hFirst = -1;
+                    bool sameHeight = true;
+                    StringBuilder hsLog = new StringBuilder();
+                    for (int gi = 0; tl2 != null && gi < tl2.Count; gi++)
+                    {
+                        object it = tl2[gi];
+                        Rectangle rr = (Rectangle)it.GetType().GetField("Rect").GetValue(it);
+                        if (hFirst < 0) hFirst = rr.Height;
+                        else if (rr.Height != hFirst) sameHeight = false;
+                        hsLog.Append(rr.Width).Append("x").Append(rr.Height).Append(" ");
+                    }
+                    Check(sameHeight && hFirst > 0,
+                        "所有文件夹**高度相同**（只有宽度按列变 → 每行都齐、名字在同一条线上）：实测 " + hsLog.ToString().Trim());
+
+                    // ★宽文件夹（2 列）里组内排序也要对：把整组第 0 个挪到本页最后一格
+                    ctSetSpan.Invoke(f, new object[] { cg0, 2, false });
+                    {
+                        // ★改列数会重建 GroupView 列表，cg0 是旧包装（它的 Apps 不会被后续操作改到）→ 这里重新取一次
+                        List<GroupView> gFresh = (List<GroupView>)Field(f, "_groups");
+                        GroupView cg0Now = gFresh != null && gFresh.Count > 0 ? gFresh[0] : cg0;
+                        int capW = (int)ctCapOf.Invoke(f, new object[] { cg0Now });
+                        int before0 = cg0Now.Apps.Count;
+                        string key0 = cg0Now.Apps.Count > 0 ? (cg0Now.Apps[0] == null ? null : cg0Now.Apps[0].Key) : null;
+                        if (before0 >= 2 && key0 != null)
+                        {
+                            MethodInfo mReorder = typeof(MainForm).GetMethod("ReorderIconAbs", BindingFlags.NonPublic | BindingFlags.Instance);
+                            mReorder.Invoke(f, new object[] { 0, 0, capW - 1 });
+                            bool movedOk = cg0Now.Apps.Count == before0 && cg0Now.Apps[0] != null && cg0Now.Apps[0].Key != key0;
+                            Check(movedOk,
+                                "2 列文件夹里组内拖排序：把第 1 个挪到本页最后一格（第 " + capW + " 格）→ 顺序真的变了、数量不变（"
+                                + before0 + " 个）");
+                        }
+                    }
+
+                    // ★2026-11-26 用户报的场景：2 列文件夹右边空出一个位置，拖别的文件夹进去要能插在那里
+                    {
+                        List<GroupView> gD = (List<GroupView>)Field(f, "_groups");
+                        MethodInfo mSlot = typeof(MainForm).GetMethod("DropSlotAt", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (gD.Count >= 3 && mSlot != null)
+                        {
+                            ctSetSpan.Invoke(f, new object[] { gD[0], 2, false });     // 第一张卡占 2 列 → 右边空出 1 列
+                            gD = (List<GroupView>)Field(f, "_groups");
+                            System.Collections.IList tlD = (System.Collections.IList)Field(f, "_tiles");
+                            object t0 = tlD[0];
+                            Rectangle r0 = (Rectangle)t0.GetType().GetField("Rect").GetValue(t0);
+                            int gTopD = (int)Field(f, "_groupTop"), scrD = (int)Field(f, "_scrollY");
+                            int gapW = (int)Prop(f, "GapX");
+                            Point holeP = new Point(r0.Right + gapW / 2, gTopD + r0.Y - scrD + Theme.Px(f, 20));
+                            int insHole = (int)mSlot.Invoke(f, new object[] { holeP });
+                            Point leftP = new Point(r0.X - Theme.Px(f, 6), gTopD + r0.Y - scrD + Theme.Px(f, 20));
+                            int insLeft = (int)mSlot.Invoke(f, new object[] { leftP });
+                            Check(insHole == 1 && insLeft == 0,
+                                "拖进「2 列文件夹右边那个空位」= 插在它后面（实测插入位置 " + insHole + "，期望 1）；拖进它左边的空白 = 插到最前面（实测 " + insLeft + "，期望 0）");
+                            for (int q = 0; q < gD.Count; q++) if (gD[q].Group != null) gD[q].Group.Span = 0;
+                            typeof(MainForm).GetMethod("InvalidateTiles", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, null);
+                        }
+                        else NoteSkip("组少于 3 个，测不了「拖进 2 列文件夹右边的空位」");
+                    }
+
+                    // ★端到端：真的把「另一个文件夹」拖进那个空位，看它是不是插在那儿
+                    {
+                        List<GroupView> gE = (List<GroupView>)Field(f, "_groups");
+                        MethodInfo mDnE = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mMvE = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mUpE = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (gE.Count >= 3 && mDnE != null)
+                        {
+                            // 先把窗口拉高，保证第 3 张卡可见（不然点不到）
+                            f.Size = new Size(f.Width, Theme.Px(f, 700));
+                            Application.DoEvents();
+                            ctSetSpan.Invoke(f, new object[] { gE[0], 2, false });
+                            ctSetSpan.Invoke(f, new object[] { gE[1], 2, false });
+                            gE = (List<GroupView>)Field(f, "_groups");
+                            System.Collections.IList tlE2 = (System.Collections.IList)Field(f, "_tiles");
+                            int gTopE2 = (int)Field(f, "_groupTop"), scrE2 = (int)Field(f, "_scrollY");
+                            Rectangle rE0 = (Rectangle)tlE2[0].GetType().GetField("Rect").GetValue(tlE2[0]);
+                            Rectangle rE2 = (Rectangle)tlE2[2].GetType().GetField("Rect").GetValue(tlE2[2]);
+                            int gapE = (int)Prop(f, "GapX");
+                            // ★从卡片的**留白处**按下去（按在图标上会变成「组内拖图标排序」，不是拖整个文件夹）
+                            Point fromE = new Point(rE2.X + Theme.Px(f, 4), gTopE2 + rE2.Y - scrE2 + Theme.Px(f, 4));
+                            Point holeE = new Point(rE0.Right + gapE / 2, gTopE2 + rE0.Y - scrE2 + Theme.Px(f, 4));
+                            string movedE = gE[2].Name;
+                            mDnE.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, fromE.X, fromE.Y, 0) });
+                            mMvE.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, holeE.X, holeE.Y, 0) });
+                            mUpE.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, holeE.X, holeE.Y, 0) });
+                            Settings stE = (Settings)typeof(MainForm).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(f);
+                            int atE = -1;
+                            for (int q = 0; q < stE.Groups.Count; q++) if (stE.Groups[q].Name == movedE) { atE = q; break; }
+                            Check(atE == 1,
+                                "真拖一次：把第 3 个文件夹拖进「2 列文件夹右边的空位」→ 落在第 2 位（实测第 " + (atE + 1) + " 位）");
+                            for (int q = 0; q < gE.Count; q++) if (gE[q].Group != null) gE[q].Group.Span = 0;
+                            typeof(MainForm).GetMethod("InvalidateTiles", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, null);
+                        }
+                        else NoteSkip("组少于 3 个，测不了「真拖进空位」");
+                    }
+
+                    // 右键菜单里真有这一项，且写的是「几列」
+                    ContextMenuStrip ctMenu = f.BuildTileMenu(cg0, null);
+                    string ctTexts = "";
+                    for (int i2 = 0; i2 < ctMenu.Items.Count; i2++) ctTexts += ctMenu.Items[i2].Text + " | ";
+                    ctMenu.Dispose();
+                    Check(ctTexts.IndexOf("文件夹大小（这个文件夹）") >= 0,
+                        "文件夹右键菜单里有「文件夹大小（这个文件夹）」（实测：" + ctTexts + "）");
+
+                    if (cg0.Group != null) cg0.Group.Span = 0;
+                    typeof(MainForm).GetMethod("InvalidateTiles", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(f, null);
+                }
+            }
+            catch (Exception exCap) { Check(false, "「文件夹大小（单个）」断言异常：" + exCap.Message); }
+
             f.Close();            ReportSkips(); Say(_ok ? "结果：全部通过" : "结果：有失败项");
             Flush();
             Environment.ExitCode = _ok ? 0 : 1;
+        }
+
+        private static void GroupHitTestDbg(MainForm f, Point p, out int index, out int slot)
+        {
+            MethodInfo m = typeof(MainForm).GetMethod("GroupHitTest", BindingFlags.NonPublic | BindingFlags.Instance);
+            object[] a = new object[] { p, 0, 0 };
+            m.Invoke(f, a);
+            index = (int)a[1]; slot = (int)a[2];
         }
 
         private static void SetScroll(MainForm f, int v)
