@@ -109,6 +109,8 @@ namespace BreadLauncher
         private Rectangle _dropRect;     // 拖动分组时的「占位空洞」：松手后它会落在这个框里（客户区坐标）
         private Point _dropCommitPt;     // 上一次真正更新落点的指针位置（迟滞用）
         private bool _captureOwned;      // 这次 Capture 是我们自己要的（用来忽略「设置 Capture 时同步冒出来的」CaptureChanged）
+        private List<int> _previewOrder;             // 拖动中的预览顺序（组下标）
+        private Dictionary<int, TileBox> _previewBox; // 组下标 → 预览布局里的框（松手后它会在这儿）
         private System.Windows.Forms.Timer _autoScrollTimer;  // 拖动到面板上下边缘时自动滚动
         private Point _dragPt;           // 拖动中光标的客户区坐标（自动滚动要用）
         private bool _dragActive;
@@ -870,7 +872,17 @@ namespace BreadLauncher
             if (_dragFrom < 0 || _groups == null || _groups.Count == 0) return Rectangle.Empty;
             int ins = InsertSlotFor(p, _dragFrom);
             int to = DropSlotToIndex(ins, _dragFrom);
-            if (to == _dragFrom) return Rectangle.Empty;
+            // ★原地不动时也要画框（以前直接 return Empty，实测 12.8% 的指针位置拖动全程一点提示都没有）
+            if (to == _dragFrom)
+            {
+                TileBox self = BoxOf(_dragFrom);
+                if (self == null) return Rectangle.Empty;
+                Rectangle rs = self.Rect;
+                rs.Y = _groupTop + rs.Y - _scrollY;
+                _previewOrder = null;
+                _previewBox = null;
+                return rs;
+            }
             List<int> order = new List<int>();
             for (int i = 0; i < _groups.Count; i++) order.Add(i);
             int moving = order[_dragFrom];
@@ -881,6 +893,11 @@ namespace BreadLauncher
             int ch;
             List<TileBox> preview = LayoutOrder(order, out ch);
             if (to < 0 || to >= preview.Count) return Rectangle.Empty;
+            // ★把整份预览留下：DrawGroups 用它把**整块面板**画成「松手后的样子」，
+            //   这样看到的整块结果就是松手结果，而不是「一块虚线框孤零零在那儿、松手后大家再跳一次」。
+            _previewOrder = order;
+            _previewBox = new Dictionary<int, TileBox>();
+            for (int i = 0; i < order.Count && i < preview.Count; i++) _previewBox[order[i]] = preview[i];
             Rectangle r = preview[to].Rect;
             r.Y = _groupTop + r.Y - _scrollY;
             return r;
@@ -1365,25 +1382,19 @@ namespace BreadLauncher
             g.SetClip(new Rectangle(0, _groupTop, Math.Max(1, Width), Math.Max(1, _groupHeight)), CombineMode.Replace);
 
             // 拖动分组时：在「松手会插进去的位置」画一根竖线（空位里也能看见，用户 2026-11-26 要的）
-            // ★拖动分组时的落点提示：**占位空洞**（松手后它会落在这个框里）。
-            //   以前是一根「整列高的竖线 + 目标卡描边」：宽卡 / 行尾窄空位时说不清，还会从别的卡片中间穿过去。
-            if (_dragActive && _dragFrom >= 0 && _dropRect.Width > 0)
-            {
-                Rectangle dr = _dropRect;
-                int rad = Theme.Px(this, 18);
-                Theme.FillRound(g, dr, rad, Color.FromArgb(30, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B));
-                using (Pen dp = new Pen(Color.FromArgb(215, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B), 2f))
-                {
-                    dp.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
-                    dp.DashPattern = new float[] { 4f, 3f };
-                    using (System.Drawing.Drawing2D.GraphicsPath gp = Theme.Round(dr, rad)) g.DrawPath(dp, gp);
-                }
-            }
+            // 占位框改成在卡片循环之后画（最上层）—— 以前画在卡片下面，等宽时正好被卡片边框压住看不见
 
+            bool previewing = _dragActive && _dragFrom >= 0 && _previewBox != null && _previewBox.Count > 0;
             for (int i = 0; i < _groups.Count; i++)
             {
-                if (i >= _tiles.Count) break;
-                TileBox tb = _tiles[i];
+                if (previewing && i == _dragFrom) continue;     // 被拖那张：画影子+占位框，不在这儿画
+                TileBox tb;
+                if (previewing && _previewBox.ContainsKey(i)) tb = _previewBox[i];
+                else
+                {
+                    if (i >= _tiles.Count) break;
+                    tb = _tiles[i];
+                }
                 int tw = tb.Tw;
                 int th = tb.ContainerH;
                 int thAll = tb.ContainerH + tb.NameH;
@@ -1416,7 +1427,7 @@ namespace BreadLauncher
                 {
                     Theme.FillRound(g, box, radius, Color.FromArgb(120, 16, 16, 16));
                 }
-                else if (_dragActive && _dragTo == i)
+                else if (_dragActive && _previewBox == null && _dragTo == i)
                 {
                     Theme.DrawRound(g, box, radius, Theme.Accent, 2f);
                 }
@@ -1553,6 +1564,18 @@ namespace BreadLauncher
                 Theme.Scroll.PaintBar(g,
                     Theme.Scroll.BarRect(this, _groupTop, _groupHeight, GroupContentHeight, _groupHeight, _scrollY));
 
+            if (_dragActive && _dragFrom >= 0 && _dropRect.Width > 0)
+            {
+                Rectangle dr = _dropRect;
+                int drad = Theme.Px(this, 18);
+                Theme.FillRound(g, dr, drad, Color.FromArgb(34, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B));
+                using (Pen dp = new Pen(Color.FromArgb(225, Theme.Accent.R, Theme.Accent.G, Theme.Accent.B), 2f))
+                {
+                    dp.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+                    dp.DashPattern = new float[] { 4f, 3f };
+                    using (System.Drawing.Drawing2D.GraphicsPath gp = Theme.Round(dr, drad)) g.DrawPath(dp, gp);
+                }
+            }
             g.Restore(state);
         }
         // ============================================================
@@ -1918,6 +1941,8 @@ namespace BreadLauncher
                         _dragTo = index;
                         _dropCommitPt = Point.Empty;
                         _dropRect = Rectangle.Empty;
+                        _previewOrder = null;
+                        _previewBox = null;
                     }
                     _dragOnIcon = slot >= 0;
                     Capture = true;
@@ -2139,6 +2164,7 @@ namespace BreadLauncher
             {
                 _dragActive = false; _dragFrom = -1; _dragTo = -1;
                 _dropRect = Rectangle.Empty; _dropCommitPt = Point.Empty;
+                _previewOrder = null; _previewBox = null;
                 lost = true;
             }
             if (_iconDrag)
@@ -2266,6 +2292,8 @@ namespace BreadLauncher
                 _dragTo = -1;
                 _dropRect = Rectangle.Empty;
                 _dropCommitPt = Point.Empty;
+                _previewOrder = null;
+                _previewBox = null;
                 if (_autoScrollTimer != null) _autoScrollTimer.Stop();
                 Cursor = Cursors.Default;
                 if (to >= 0 && to != from) MoveGroupTo(from, to, true);
@@ -2439,6 +2467,7 @@ namespace BreadLauncher
                     _iconDragAbs = -1; _iconDragPage = -1;
                     _tileResizing = false; _tileResizeGroup = -1;
                     _dropRect = Rectangle.Empty; _dropCommitPt = Point.Empty;
+                    _previewOrder = null; _previewBox = null;
                     if (_autoScrollTimer != null) _autoScrollTimer.Stop();
                     try { Capture = false; } catch (Exception) { }
                     Cursor = Cursors.Default;
@@ -2927,16 +2956,69 @@ namespace BreadLauncher
             return ins;
         }
 
+        /// <summary>按「松手后的布局」反查插入位：枚举 0..n 每个插入位，各算一遍预览布局，
+        /// 取**包含指针**的那一格；都不含就取到指针距离最近的那一格。
+        /// ★2026-11-27：以前是先按旧布局的「行/列」数出一个 ins，再拿去索引**重排后**的布局 ——
+        ///   1/2/3 列混排时抽走一张卡会让整条流重新折行，旧的第 k 个空档在新的第 k 个位置可能差一行甚至对角，
+        ///   实测指针到占位框最远 1021px、只有 28%~72% 的位置框在指针底下。改成反查后，框=指针所在格=提交结果。
+        /// 平局规则（先同行，再横向最近，再插入位靠前）写死，避免在宽卡/空位边界上抖。</summary>
+        private int InsertSlotByPreview(Point p, int from)
+        {
+            int n = _groups == null ? 0 : _groups.Count;
+            if (n <= 1 || from < 0) return from < 0 ? 0 : from;
+            int bestIns = -1;
+            long bestScore = long.MaxValue;
+            int bestRowDiff = int.MaxValue;
+            for (int ins = 0; ins <= n; ins++)
+            {
+                int to = DropSlotToIndex(ins, from);
+                List<int> order = new List<int>();
+                for (int i = 0; i < n; i++) order.Add(i);
+                int moving = order[from];
+                order.RemoveAt(from);
+                if (to < 0) to = 0;
+                if (to > order.Count) to = order.Count;
+                order.Insert(to, moving);
+                int ch;
+                List<TileBox> pv = LayoutOrder(order, out ch);
+                if (to < 0 || to >= pv.Count) continue;
+                Rectangle r = pv[to].Rect;
+                r.Y = _groupTop + r.Y - _scrollY;
+                int dx = 0, dy = 0;
+                if (p.X < r.Left) dx = r.Left - p.X;
+                else if (p.X >= r.Right) dx = p.X - r.Right + 1;
+                if (p.Y < r.Top) dy = r.Top - p.Y;
+                else if (p.Y >= r.Bottom) dy = p.Y - r.Bottom + 1;
+                bool inside = (dx == 0 && dy == 0);
+                int rowDiff = Math.Abs((r.Top + r.Height / 2) - p.Y);
+                // 评分（决定「框离手指多远」）：
+                //   ① 指针在格子里 → 最优先；
+                //   ② 否则**同一行**优先（指针落在行内空隙里时，别跳到别的行去）；
+                //   ③ 再按横向距离，最后按到格子中心的距离。
+                bool sameRow = (p.Y >= r.Top && p.Y < r.Bottom);
+                long dxCenter = Math.Abs(p.X - (r.Left + r.Width / 2));
+                long dist2 = dxCenter * dxCenter
+                           + (long)(p.Y - (r.Top + r.Height / 2)) * (p.Y - (r.Top + r.Height / 2));
+                long score;
+                if (inside) score = dist2;                        // 包含指针的里，取最近的
+                else if (sameRow) score = 100000000L + dxCenter;  // 同一行：按横向近
+                else score = 1000000000L + dist2;                 // 不同行：按整体距离
+                if (score < bestScore || (score == bestScore && rowDiff < bestRowDiff))
+                {
+                    bestScore = score; bestRowDiff = rowDiff; bestIns = ins;
+                }
+            }
+            if (bestIns < 0) return from;
+            return bestIns;
+        }
+
         /// <summary>拖分组时「指针在哪张卡上 / 在哪个空位里」→ 插入位置（0..组数）。
         /// ★两种情形必须用**同一套语义**（上次就是把两套混用，才把普通换位弄坏的）：
         ///   落在某张卡 hi 上 = 「插到那张卡的后面」（等价于老行为 to = hi）；
         ///   落在空位/缝里 = DropSlotAt 直接数出来的位置。</summary>
         private int InsertSlotFor(Point p, int from)
         {
-            int hi, hs;
-            GroupHitTest(p, out hi, out hs);
-            if (hi >= 0) return hi >= from ? hi + 1 : hi;
-            return DropSlotAt(p);
+            return InsertSlotByPreview(p, from);
         }
 
         /// <summary>拖动时那根「会插在这儿」的竖线 x 坐标（客户区）。返回 0 = 不画。</summary>
@@ -3809,7 +3891,7 @@ namespace BreadLauncher
             try
             {
                 MessageBox.Show(this,
-                    "BreadLauncher 1.34\n\n" +
+                    "BreadLauncher 1.35\n\n" +
                     "仿 Windows 11 开始菜单的便携启动面板。\n" +
                     "分组就是「大文件夹」：不用点进去，点里面的小图标直接启动。\n" +
                     "应用列表来自系统 shell:AppsFolder（含商店应用）。\n" +

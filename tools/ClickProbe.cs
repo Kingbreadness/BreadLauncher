@@ -3213,6 +3213,100 @@ namespace BreadLauncher
                         else NoteSkip("组少于 2 个，测不了「Esc 取消拖动」");
                     }
 
+                    // ★拖动中「整块面板画的就是松手后的样子」：预览里每张卡的框，松手后必须一一对上
+                    {
+                        List<GroupView> gV = (List<GroupView>)Field(f, "_groups");
+                        MethodInfo mDnV = typeof(MainForm).GetMethod("OnMouseDown", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mMvV = typeof(MainForm).GetMethod("OnMouseMove", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mUpV = typeof(MainForm).GetMethod("OnMouseUp", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (gV.Count >= 3 && mDnV != null)
+                        {
+                            f.Size = new Size(f.Width, Theme.Px(f, 700));
+                            Application.DoEvents();
+                            System.Collections.IList tlV = (System.Collections.IList)Field(f, "_tiles");
+                            Rectangle ra = (Rectangle)tlV[0].GetType().GetField("Rect").GetValue(tlV[0]);
+                            Rectangle rb = (Rectangle)tlV[1].GetType().GetField("Rect").GetValue(tlV[1]);
+                            int topV = (int)Field(f, "_groupTop"), scrV = (int)Field(f, "_scrollY");
+                            Point pa = new Point(ra.X + Theme.Px(f, 4), topV + ra.Y - scrV + Theme.Px(f, 4));
+                            Point pb = new Point(rb.X + Theme.Px(f, 4), topV + rb.Y - scrV + Theme.Px(f, 4));
+                            // 记下「预览里每张卡在哪」（按组名）
+                            string[] namesV = new string[gV.Count];
+                            for (int q = 0; q < gV.Count; q++) namesV[q] = gV[q].Name;
+                            mDnV.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pa.X, pa.Y, 0) });
+                            mMvV.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 0, pb.X, pb.Y, 0) });
+                            System.Collections.IDictionary pv = (System.Collections.IDictionary)Field(f, "_previewBox");
+                            Dictionary<string, Rectangle> prevRects = new Dictionary<string, Rectangle>();
+                            if (pv != null)
+                            {
+                                foreach (System.Collections.DictionaryEntry de in pv)
+                                {
+                                    object tbv = de.Value;
+                                    Rectangle rr = (Rectangle)tbv.GetType().GetField("Rect").GetValue(tbv);
+                                    prevRects[namesV[(int)de.Key]] = new Rectangle(rr.X, topV + rr.Y - scrV, rr.Width, rr.Height);
+                                }
+                            }
+                            mUpV.Invoke(f, new object[] { new MouseEventArgs(MouseButtons.Left, 1, pb.X, pb.Y, 0) });
+                            List<GroupView> gV2 = (List<GroupView>)Field(f, "_groups");
+                            System.Collections.IList tlV2 = (System.Collections.IList)Field(f, "_tiles");
+                            int mismatch = 0;
+                            string worst = "";
+                            for (int q = 0; q < gV2.Count; q++)
+                            {
+                                if (prevRects.ContainsKey(gV2[q].Name) == false) continue;
+                                Rectangle rr = (Rectangle)tlV2[q].GetType().GetField("Rect").GetValue(tlV2[q]);
+                                Rectangle real = new Rectangle(rr.X, topV + rr.Y - (int)Field(f, "_scrollY"), rr.Width, rr.Height);
+                                Rectangle pr = prevRects[gV2[q].Name];
+                                if (Math.Abs(pr.X - real.X) > Theme.Px(f, 2) || Math.Abs(pr.Y - real.Y) > Theme.Px(f, 2))
+                                {
+                                    mismatch++;
+                                    if (worst.Length < 80) worst = gV2[q].Name + " 预览" + pr + " vs 实际" + real + "; ";
+                                }
+                            }
+                            Check(prevRects.Count > 0 && mismatch == 0,
+                                "拖动中整块面板的预览位置 = 松手后的真实位置（比了 " + prevRects.Count + " 张，错位 " + mismatch + " 张）" + (worst.Length > 0 ? "：" + worst : ""));
+                        }
+                        else NoteSkip("组少于 3 个，测不了「整块预览=松手结果」");
+                    }
+
+                    // ★落点可信度（2026-11-27 用户「拖动地点不对」的验收指标）：
+                    //   扫一遍分组区，每个指针位置都必须算得出落点，而且**占位框要罩住指针**（不能跑到别的行/别的卡上）
+                    {
+                        MethodInfo mSlotV = typeof(MainForm).GetMethod("InsertSlotByPreview", BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo mDropRV = typeof(MainForm).GetMethod("ComputeDropRect", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (mSlotV != null && mDropRV != null && ((List<GroupView>)Field(f, "_groups")).Count >= 3)
+                        {
+                            int gTopR = (int)Field(f, "_groupTop"), gHR = (int)Field(f, "_groupHeight");
+                            int gwR = (int)Field(f, "_groupWidth"), glR = (int)Field(f, "_groupLeft");
+                            int hits = 0, total = 0, noBox = 0, farCount = 0;
+                            for (int yy = gTopR + Theme.Px(f, 12); yy < gTopR + gHR - Theme.Px(f, 4); yy += Theme.Px(f, 40))
+                            {
+                                for (int xx = glR + Theme.Px(f, 6); xx < glR + gwR - Theme.Px(f, 6); xx += Theme.Px(f, 40))
+                                {
+                                    Point pv = new Point(xx, yy);
+                                    int insV = (int)mSlotV.Invoke(f, new object[] { pv, 0 });
+                                    // 用「会被拖的第 0 个」假装备选：临时把 _dragFrom 设成 0 再算框
+                                    object oldFrom = Field(f, "_dragFrom");
+                                    typeof(MainForm).GetField("_dragFrom", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, 0);
+                                    Rectangle boxV = (Rectangle)mDropRV.Invoke(f, new object[] { pv });
+                                    typeof(MainForm).GetField("_dragFrom", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(f, oldFrom);
+                                    total++;
+                                    if (boxV.Width <= 0) { noBox++; continue; }
+                                    if (boxV.Contains(pv)) hits++;
+                                    int cxV = boxV.Left + boxV.Width / 2, cyV = boxV.Top + boxV.Height / 2;
+                                    if (Math.Abs(cxV - pv.X) > Theme.Px(f, 160) || Math.Abs(cyV - pv.Y) > Theme.Px(f, 120)) farCount++;
+                                }
+                            }
+                            double hitRate = total == 0 ? 0 : (double)hits / total;
+                            // ★阈值说明：指针落在卡片之间的缝 / 名字带 / 内容右下的空白时，占位框本来就不该「罩住指针」，
+                            //   所以这里只要求「每个位置都算得出落点」+「罩住的比例不太低」+「跑到一卡半以外的极少」。
+                            Check(total > 0 && noBox == 0 && hitRate >= 0.60 && farCount * 8 <= total,
+                                "落点可信度：采样 " + total + " 个指针位置 → 每个都算得出落点（没框 " + noBox + " 个）、"
+                                + "占位框罩住指针的占 "
+                                + (hitRate * 100).ToString("0.0") + "%（缝/名字带上本来就不该罩住，要求 ≥60%），离得太远（超过一卡半）的 " + farCount + " 个");
+                        }
+                        else NoteSkip("组少于 3 个，测不了「落点可信度扫描」");
+                    }
+
                     // 右键菜单里真有这一项，且写的是「几列」
                     ContextMenuStrip ctMenu = f.BuildTileMenu(cg0, null);
                     string ctTexts = "";
